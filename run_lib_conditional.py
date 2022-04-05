@@ -28,7 +28,7 @@ import logging
 # Keep the import below for registering all model definitions
 from models import ddpm, ncsnv2, ncsnpp
 import losses
-import sampling, sampling_multivariate, sampling_conditional
+import sampling, sampling_multivariate, sampling_conditional, sampling_equal_energy
 from models import utils as mutils
 from models.ema import ExponentialMovingAverage
 import datasets
@@ -188,16 +188,19 @@ def train(config, workdir):
   likelihood_weighting = config.training.likelihood_weighting
   train_step_fn = losses.get_step_fn(sde, train=True, optimize_fn=optimize_fn,
                                      reduce_mean=reduce_mean, continuous=continuous,
-                                     likelihood_weighting=likelihood_weighting, conditional=True, config = config)
+                                     likelihood_weighting=likelihood_weighting, config = config)
   eval_step_fn = losses.get_step_fn(sde, train=False, optimize_fn=optimize_fn,
                                     reduce_mean=reduce_mean, continuous=continuous,
-                                    likelihood_weighting=likelihood_weighting, conditional=True, config = config)
+                                    likelihood_weighting=likelihood_weighting, config = config)
 
   # Building sampling functions
   if config.training.snapshot_sampling:
     sampling_shape = (config.training.batch_size, config.data.num_channels,
                       config.data.image_size, config.data.image_size)
-    if config.sampling.type == 'multivariate':
+
+    if config.training.conditional_model == 'equal_energy':
+      sampling_fn = sampling_equal_energy.get_sampling_fn(config, sde, sampling_shape, inverse_scaler, sampling_eps)
+    elif config.sampling.type == 'multivariate':
       sampling_fn = sampling_multivariate.get_sampling_fn(config, sde, sampling_shape, inverse_scaler, sampling_eps)
     elif config.sampling.type == 'conditional':
       sampling_fn = sampling_conditional.get_sampling_fn(config, sde, sampling_shape, inverse_scaler, sampling_eps)

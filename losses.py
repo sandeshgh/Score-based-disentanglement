@@ -93,7 +93,7 @@ def get_equal_energy_loss_fn(sde, train, reduce_mean=True, continuous=True, like
     z = torch.randn_like(batch)
     mean, std = sde.marginal_prob(batch, t)
     perturbed_data = mean + std[:, None, None, None] * z
-    score, score2 = score_fn(perturbed_data, t)
+    score, score2 = score_fn(perturbed_data, t, batch)
     loss_div = score_divergence(score, score2)
 
     if not likelihood_weighting:
@@ -215,13 +215,14 @@ def get_step_fn(sde, train, optimize_fn=None, reduce_mean=False, continuous=True
   Returns:
     A one-step function for training or evaluation.
   """
-  if continuous:
-    loss_fn = get_sde_loss_fn(sde, train, reduce_mean=reduce_mean,
-                              continuous=True, likelihood_weighting=likelihood_weighting)
-  elif config.training.conditional_model == 'equal_energy':
+  if config.training.conditional_model == 'equal_energy':
     loss_fn = get_equal_energy_loss_fn(sde, train, reduce_mean=reduce_mean,
                               continuous=True, likelihood_weighting=likelihood_weighting)
 
+  elif continuous:
+    loss_fn = get_sde_loss_fn(sde, train, reduce_mean=reduce_mean,
+                              continuous=True, likelihood_weighting=likelihood_weighting)
+  
   else:
     assert not likelihood_weighting, "Likelihood weighting is not supported for original SMLD/DDPM training."
     if isinstance(sde, VESDE):

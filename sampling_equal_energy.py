@@ -338,7 +338,7 @@ def shared_predictor_update_fn(x, t, sde, model, predictor, probability_flow, co
   if compositional:
     score_fn = mutils.get_compositional_score_fn(sde, model, train=False, continuous=continuous, output_type = 'single_score')
   else:
-    score_fn = mutils.get_equal_energy_score_fn(sde, model, train=False, continuous=continuous)
+    score_fn = mutils.get_equal_energy_score_fn(sde, model, train=False, continuous=continuous, generate=True)
   if predictor is None:
     # Corrector-only sampler
     predictor_obj = NonePredictor(sde, score_fn, probability_flow)
@@ -352,7 +352,7 @@ def shared_corrector_update_fn(x, t, sde, model, corrector, continuous, snr, n_s
   if compositional:
     score_fn = mutils.get_compositional_score_fn(sde, model, train=False, continuous=continuous, output_type= 'single_score')
   else:
-    score_fn = mutils.get_equal_energy_score_fn(sde, model, train=False, continuous=continuous)
+    score_fn = mutils.get_equal_energy_score_fn(sde, model, train=False, continuous=continuous, generate=True)
   if corrector is None:
     # Predictor-only sampler
     corrector_obj = NoneCorrector(sde, score_fn, snr, n_steps)
