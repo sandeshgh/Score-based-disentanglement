@@ -23,6 +23,17 @@ from models import utils as mutils
 from sde_lib import VESDE, VPSDE
 
 
+def score_divergence(score1, score2):
+  score1 = score1.viewe(score1.shape[0], -1)
+  norm1 = torch.sqrt(torch.mean(score1**2, dim =-1))
+  score2 = score2.viewe(score2.shape[0], -1)
+  norm2 = torch.sqrt(torch.mean(score2**2, dim =-1))
+  div = (score1/norm1 - score2/norm2)**2
+  out = div.mean()
+  return out
+
+
+
 def get_optimizer(config, params):
   """Returns a flax optimizer object based on `config`."""
   if config.optim.optimizer == 'Adam':
