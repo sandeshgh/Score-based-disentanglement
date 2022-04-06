@@ -24,12 +24,12 @@ from sde_lib import VESDE, VPSDE
 
 
 def score_divergence(score1, score2):
-  score1 = score1.viewe(score1.shape[0], -1)
+  score1 = score1.view(score1.shape[0], -1)
   norm1 = torch.sqrt(torch.mean(score1**2, dim =-1))
-  score2 = score2.viewe(score2.shape[0], -1)
+  score2 = score2.view(score2.shape[0], -1)
   norm2 = torch.sqrt(torch.mean(score2**2, dim =-1))
-  div = (score1/norm1 - score2/norm2)**2
-  out = div.mean()
+  divergence = (score1/norm1.unsqueeze(1) - score2/norm2.unsqueeze(1))**2
+  out = divergence.mean()
   return out
 
 
@@ -63,7 +63,7 @@ def optimization_manager(config):
   return optimize_fn
 
 
-def get_equal_energy_loss_fn(sde, train, reduce_mean=True, continuous=True, likelihood_weighting=True, eps=1e-5, gamma=0.1):
+def get_equal_energy_loss_fn(sde, train, reduce_mean=True, continuous=True, likelihood_weighting=True, eps=1e-5, gamma=1):
   """Create a loss function for training with arbirary SDEs.
   Args:
     sde: An `sde_lib.SDE` object that represents the forward SDE.
@@ -94,17 +94,18 @@ def get_equal_energy_loss_fn(sde, train, reduce_mean=True, continuous=True, like
     mean, std = sde.marginal_prob(batch, t)
     perturbed_data = mean + std[:, None, None, None] * z
     score, score2 = score_fn(perturbed_data, t, batch)
-    loss_div = score_divergence(score, score2)
+    # loss_div = score_divergence(score, score2)
 
     if not likelihood_weighting:
-      losses = torch.square(score * std[:, None, None, None] + z)
+      losses = torch.square((score +score2)* std[:, None, None, None] + 2*z) + gamma*torch.square(score* std[:, None, None, None] + z)
       losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1)
     else:
       g2 = sde.sde(torch.zeros_like(batch), t)[1] ** 2
-      losses = torch.square(score + z / std[:, None, None, None])
+      losses = torch.square(score + score2+ 2*z / std[:, None, None, None]) + gamma*torch.square(score + z / std[:, None, None, None])
       losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1) * g2
 
-    loss = torch.mean(losses) + gamma*loss_div
+    # loss = torch.mean(losses) - gamma*loss_div
+    loss = torch.mean(losses) 
     return loss
 
   return loss_fn

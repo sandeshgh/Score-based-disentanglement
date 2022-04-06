@@ -184,10 +184,21 @@ class EulerMaruyamaPredictor(Predictor):
   def update_fn(self, x, t, latent):
     dt = -1. / self.rsde.N
     z = torch.randn_like(x)
-    drift, diffusion = self.rsde.sde(x, t, latent)
-    x_mean = x + drift * dt
-    x = x_mean + diffusion[:, None, None, None, None] * np.sqrt(-dt) * z
-    return x, x_mean
+
+    x_0 = x[:,:,:,:,0]
+    drift_0, diffusion_0 = self.rsde.sde(x_0, t, latent[:,:,0])
+    x_mean_0 = x_0 + drift_0 * dt
+    x_0 = x_mean_0 + diffusion_0[:, None, None, None] * np.sqrt(-dt) * z[:,:,:,:,0]
+
+    x_1 = x[:,:,:,:,1]
+    drift_1, diffusion_1 = self.rsde.sde(x_1, t, latent[:,:,1])
+    x_mean_1 = x_1 + drift_1 * dt
+    x_1 = x_mean_1 + diffusion_1[:, None, None, None] * np.sqrt(-dt) * z[:,:,:,:,1]
+
+    x_out = torch.cat((x_0.unsqueeze(-1), x_1.unsqueeze(-1)), dim=-1)
+    x_mean = torch.cat((x_mean_0.unsqueeze(-1), x_mean_1.unsqueeze(-1)), dim=-1)
+
+    return x_out, x_mean
 
 
 @register_predictor(name='reverse_diffusion')
@@ -398,7 +409,7 @@ def get_pc_sampler(sde, shape, predictor, corrector, inverse_scaler, snr,
                                           n_steps=n_steps,
                                           compositional=compositional)
 
-  def pc_sampler(model):
+  def pc_sampler(model, latent):
     """ The PC sampler funciton.
 
     Args:
@@ -412,6 +423,7 @@ def get_pc_sampler(sde, shape, predictor, corrector, inverse_scaler, snr,
       x = torch.cat((x.unsqueeze(-1),x.unsqueeze(-1)), dim=-1)
       latent = latent.unsqueeze(0)
       latent = torch.cat(x.shape[0]*[latent], dim = 0).to(x.device)
+      # latent = latent.to(x.device)
       timesteps = torch.linspace(sde.T, eps, sde.N, device=device)
 
       for i in range(sde.N):

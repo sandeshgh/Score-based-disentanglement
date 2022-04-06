@@ -848,6 +848,7 @@ class DDPM_compositional_equal_energy(nn.Module):
     ## for the encoding part####------
     filter_dim = 64
     latent_dim = 64
+    encode_vector_length = 3
     latent_dim_expand = 16
     self.embed_conv1 = nn.Conv2d(3, filter_dim, kernel_size=3, stride=1, padding=1)
     self.embed_layer1 = CondResBlockNoLatent(filters=filter_dim, rescale=False, downsample=True)
@@ -857,14 +858,14 @@ class DDPM_compositional_equal_energy(nn.Module):
     self.embed_fc2 = nn.Linear(int(filter_dim/2), latent_dim_expand)
 
 
-    self.layer_encode = CondResBlock(rescale=False, downsample=False, latent_dim=10, filters=10)
-    self.layer1 = CondResBlock(rescale=False, downsample=False, latent_dim=10, filters=10)
-    self.layer2 = CondResBlock(downsample=False, latent_dim=10, filters=10)
+    self.layer_encode = CondResBlock(rescale=False, downsample=False, latent_dim=encode_vector_length, filters=encode_vector_length)
+    self.layer1 = CondResBlock(rescale=False, downsample=False, latent_dim=encode_vector_length, filters=encode_vector_length)
+    self.layer2 = CondResBlock(downsample=False, latent_dim=encode_vector_length, filters=encode_vector_length)
     self.begin_conv = nn.Sequential(nn.Conv2d(3, filter_dim, kernel_size = 3, stride=1, padding=1),
                                         nn.Conv2d(filter_dim, int(filter_dim/2), 3, stride=1, padding=1))
     self.upconv = nn.Conv2d(in_channels=64, out_channels=filter_dim, kernel_size=3, padding=1)
     self.encoder = torchvision.models.resnet18(pretrained = False)
-    self.encoder_linear = nn.Linear(1000, 10)
+    self.encoder_linear = nn.Linear(1000, encode_vector_length)
 
     self.ddpm = DDPM(config=config)
 
@@ -963,18 +964,19 @@ class DDPM_compositional_equal_energy(nn.Module):
 
   def get_latent(self, prob):
     m = prob.shape[0]
-    I = torch.eye(m, dtype=prob.dtype, device=prob.device)
-    latent = torch.mv(I, prob)
+    I = torch.diag_embed(prob)
+    # latent = torch.mv(I, prob)
 
-    indx = torch.randint(2)
-    latent_select = latent[:,indx]
+    indx = torch.randint(low=0, high=3, size=(m,2))
+    # index = [arange(m), indx, :]
+    out = I[torch.arange(m).unsqueeze(1), indx]
     
-    return latent_select[0], latent_select[1]
+    return out[:,0], out[:,1]
   
   def forward_generate(self, x_tilde, labels, latent_factor):
-    score1 = self.decode(x_tilde,labels)
-    score2 = self.decode_conditional(x_tilde,labels, latent_factor)
-    return score1, score2
+    # score1 = self.decode(x_tilde,labels)
+    score = self.decode_conditional(x_tilde,labels, latent_factor)
+    return score
 
   def forward(self, x_tilde, labels, x):
     latent_prob = self.encode(x)

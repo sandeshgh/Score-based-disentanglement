@@ -141,10 +141,10 @@ def get_model_equal_energy_fn(model, train=False, generate=False):
       """
       if not train:
         model.eval()
-        return model.forward_generate(x, labels, latent)
+        return model.module.forward_generate(x, labels, latent)
       else:
         model.train()
-        return model.forward_generate(x, labels, latent)
+        return model.module.forward_generate(x, labels, latent)
   else:
     def model_fn(x, labels, x_clean):
       """Compute the output of the score-based model.
@@ -273,17 +273,17 @@ def get_equal_energy_score_fn(sde, model, train=False, continuous=False, generat
           # The maximum value of time embedding is assumed to 999 for
           # continuously-trained models.
           labels = t * 999
-          score, score2 = model_fn(x, labels, latent)
+          score = model_fn(x, labels, latent)
           std = sde.marginal_prob(torch.zeros_like(x), t)[1]
         else:
           # For VP-trained models, t=0 corresponds to the lowest noise level
           labels = t * (sde.N - 1)
-          score, score2 = model_fn(x, labels, latent)
+          score = model_fn(x, labels, latent)
           std = sde.sqrt_1m_alphas_cumprod.to(labels.device)[labels.long()]
 
         score = -score / std[:, None, None, None]
-        score2 = -score2 / std[:, None, None, None]
-        return score, score2
+        #score2 = -score2 / std[:, None, None, None]
+        return score
 
     elif isinstance(sde, sde_lib.VESDE):
       def score_fn(x, t, latent):
@@ -295,8 +295,8 @@ def get_equal_energy_score_fn(sde, model, train=False, continuous=False, generat
           labels *= sde.N - 1
           labels = torch.round(labels).long()
 
-        score, score2 = model_fn(x, labels, latent)
-        return score, score2
+        score = model_fn(x, labels, latent)
+        return score
 
     else:
       raise NotImplementedError(f"SDE class {sde.__class__.__name__} not yet supported.")
