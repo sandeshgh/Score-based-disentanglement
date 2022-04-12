@@ -24,7 +24,7 @@ import os
 import tensorflow as tf
 
 os.environ["CUDA_DEVIC_ORDER"]="PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"]="0,1,2"
+os.environ["CUDA_VISIBLE_DEVICES"]="0,2,3"
 
 FLAGS = flags.FLAGS
 

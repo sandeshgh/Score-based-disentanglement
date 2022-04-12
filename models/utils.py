@@ -19,6 +19,10 @@
 import torch
 import sde_lib
 import numpy as np
+import os
+os.environ["CUDA_DEVIC_ORDER"]="PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"]="0,2,3"
+
 
 
 _MODELS = {}

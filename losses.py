@@ -63,7 +63,7 @@ def optimization_manager(config):
   return optimize_fn
 
 
-def get_equal_energy_loss_fn(sde, train, reduce_mean=True, continuous=True, likelihood_weighting=True, eps=1e-5, gamma=1):
+def get_equal_energy_loss_fn(sde, train, reduce_mean=True, continuous=True, likelihood_weighting=True, eps=1e-5, gamma=0.5):
   """Create a loss function for training with arbirary SDEs.
   Args:
     sde: An `sde_lib.SDE` object that represents the forward SDE.
@@ -95,13 +95,21 @@ def get_equal_energy_loss_fn(sde, train, reduce_mean=True, continuous=True, like
     perturbed_data = mean + std[:, None, None, None] * z
     score, score2 = score_fn(perturbed_data, t, batch)
     # loss_div = score_divergence(score, score2)
+    
 
     if not likelihood_weighting:
-      losses = torch.square((score +score2)* std[:, None, None, None] + 2*z) + gamma*torch.square(score* std[:, None, None, None] + z)
+      # losses = torch.square((score +score2)* std[:, None, None, None] + 2*z) + gamma*torch.square(score* std[:, None, None, None] + z)
+      losses = torch.square(score2* std[:, None, None, None] + z) + torch.square(score* std[:, None, None, None] + z)
+      loss_ortho = torch.square((score* std[:, None, None, None] + z)*(score2* std[:, None, None, None] + z))
+      # loss_ortho = reduce_op(loss_ortho.reshape(loss_ortho.shape[0], loss_ortho.shape[1], -1), dim=-1)
+      losses = losses+gamma*loss_ortho
       losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1)
     else:
       g2 = sde.sde(torch.zeros_like(batch), t)[1] ** 2
-      losses = torch.square(score + score2+ 2*z / std[:, None, None, None]) + gamma*torch.square(score + z / std[:, None, None, None])
+      # losses = torch.square(score + score2+ 2*z / std[:, None, None, None]) + gamma*torch.square(score + z / std[:, None, None, None])
+      losses = torch.square(score + z / std[:, None, None, None]) + torch.square(score2 + z / std[:, None, None, None])
+      loss_ortho = torch.square((score + z / std[:, None, None, None])*(score2 + z / std[:, None, None, None]))
+      losses = losses+gamma*loss_ortho
       losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1) * g2
 
     # loss = torch.mean(losses) - gamma*loss_div

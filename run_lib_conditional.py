@@ -246,7 +246,18 @@ def train(config, workdir):
       if config.training.snapshot_sampling:
         ema.store(score_model.parameters())
         ema.copy_to(score_model.parameters())
-        if config.sampling.type == 'multivariate':
+        if config.training.conditional_model == 'equal_energy':
+          class_n = save_step%3
+          latent = torch.zeros(3)
+          latent[class_n] = 1
+
+          class_n_2 = (save_step+1)%3
+          latent_2 = torch.zeros(3)
+          latent_2[class_n_2] = 1
+
+          latent_stack = torch.cat((latent.unsqueeze(-1), latent_2.unsqueeze(-1)), dim=-1)
+          sample, n = sampling_fn(score_model, latent_stack)
+        elif config.sampling.type == 'multivariate':
           sample, sample_stack, n = sampling_fn(score_model)
         elif config.sampling.type == 'conditional':
           class_n = save_step%10
@@ -258,7 +269,7 @@ def train(config, workdir):
         ema.restore(score_model.parameters())
         if config.sampling.type == 'multivariate':
           plot_samples_multivariate(sample_dir, sample, sample_stack, step) #either single or multivariate
-        elif config.sampling.type == 'conditional':
+        elif config.sampling.type == 'conditional' or config.training.conditional_model == 'equal_energy':
           plot_samples_conditional(sample_dir, sample, step, class_n)
         else:
           plot_samples(sample_dir, sample, step) #either single or multivariate
