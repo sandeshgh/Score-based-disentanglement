@@ -90,18 +90,25 @@ class SDE(abc.ABC):
       def T(self):
         return T
 
-      def sde(self, x, t):
+      def sde(self, x, t, latent=None):
         """Create the drift and diffusion functions for the reverse SDE/ODE."""
         drift, diffusion = sde_fn(x, t)
-        score = score_fn(x, t)
+        if latent is not None:
+          score = score_fn(x, t, latent)
+        else:
+          score = score_fn(x, t)
+          
         drift = drift - diffusion[:, None, None, None] ** 2 * score * (0.5 if self.probability_flow else 1.)
         # Set the diffusion function to zero for ODEs.
         diffusion = 0. if self.probability_flow else diffusion
         return drift, diffusion
 
-      def discretize(self, x, t):
+      def discretize(self, x, t, latent=None):
         """Create discretized iteration rules for the reverse diffusion sampler."""
-        f, G = discretize_fn(x, t)
+        if latent is not None:
+          f, G = discretize_fn(x, t, latent)
+        else:
+          f, G = discretize_fn(x, t)
         rev_f = f - G[:, None, None, None] ** 2 * score_fn(x, t) * (0.5 if self.probability_flow else 1.)
         rev_G = torch.zeros_like(G) if self.probability_flow else G
         return rev_f, rev_G
@@ -224,10 +231,62 @@ class SDE(abc.ABC):
         """Create the drift and diffusion functions for the reverse SDE/ODE."""
         drift, diffusion = sde_fn(x, t)
         score1, score2 = score_fn(x, t, latent)
-        score2 = score1+score2
+        score = score1+score2
         # score1 is the unconditional score, score2 is the conditional score with the condition given by the latent vector
         # these two have been stacked together and drift is computed for the stacked tensor
-        score_stack = torch.cat((score1.unsqueeze(-1), score2.unsqueeze(-1)), dim =-1)
+        score_stack = torch.cat((score.unsqueeze(-1), 2*score1.unsqueeze(-1), 2*score2.unsqueeze(-1)), dim =-1)
+
+        # drift = drift - diffusion[:, None, None, None] ** 2 * score1 * (0.5 if self.probability_flow else 1.)
+        drift_stack = drift.unsqueeze(-1) - diffusion[:, None, None, None, None] ** 2 * score_stack * (0.5 if self.probability_flow else 1.)
+        # Set the diffusion function to zero for ODEs.
+        diffusion = 0. if self.probability_flow else diffusion
+        return drift_stack, diffusion, score_stack
+
+      def discretize(self, x, t):
+        """Create discretized iteration rules for the reverse diffusion sampler."""
+        f, G = discretize_fn(x, t)
+        score, score_stack = score_fn(x, t)
+        rev_f = f - G[:, None, None, None] ** 2 * score * (0.5 if self.probability_flow else 1.)
+        rev_G = torch.zeros_like(G) if self.probability_flow else G
+        rev_f_stack = f - G[:, None, None, None] ** 2 * score_stack * (0.5 if self.probability_flow else 1.)
+        return rev_f, rev_G, rev_f_stack
+
+    return RSDE_conditional()
+  def reverse_conditional_swap(self, score_fn, probability_flow=False):
+    """Create the reverse-time SDE/ODE.
+        The reverse conditional can be used for the generation with conditional latent variables.
+
+    Args:
+      score_fn: A time-dependent score-based model that takes x and t and returns the score.
+      probability_flow: If `True`, create the reverse-time ODE used for probability flow sampling.
+    """
+    N = self.N
+    T = self.T
+    sde_fn = self.sde
+    discretize_fn = self.discretize
+
+    # Build the class for reverse-time SDE.
+    class RSDE_conditional(self.__class__):
+      def __init__(self):
+        self.N = N
+        self.probability_flow = probability_flow
+
+      @property
+      def T(self):
+        return T
+
+      def sde(self, x, t, latent):
+        """Create the drift and diffusion functions for the reverse SDE/ODE."""
+        drift, diffusion = sde_fn(x, t)
+        score01, score02 = score_fn(x, t, latent[:,:,0])
+        score11, score12 = score_fn(x, t, latent[:,:,1])
+        score = score01+score02
+        score1 = score01+score12
+        score2 = score02+score11
+
+        # score1 is the unconditional score, score2 is the conditional score with the condition given by the latent vector
+        # these two have been stacked together and drift is computed for the stacked tensor
+        score_stack = torch.cat((score.unsqueeze(-1), score1.unsqueeze(-1), score2.unsqueeze(-1)), dim =-1)
 
         # drift = drift - diffusion[:, None, None, None] ** 2 * score1 * (0.5 if self.probability_flow else 1.)
         drift_stack = drift.unsqueeze(-1) - diffusion[:, None, None, None, None] ** 2 * score_stack * (0.5 if self.probability_flow else 1.)

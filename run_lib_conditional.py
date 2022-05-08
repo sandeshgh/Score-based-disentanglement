@@ -68,10 +68,13 @@ def plot_samples_conditional(sample_dir, sample_stack, step, class_n):
     # with tf.io.gfile.GFile(
     #     os.path.join(this_sample_dir, "sample.np"), "wb") as fout:
     #   np.save(fout, sample)
-    if k ==0:
-      image_name = "sample.png"
+    if len(class_n)>1:
+        image_name = "sample_"+str(class_n[k])+".png"
     else:
-      image_name = "sample_"+str(class_n)+".png"
+      if k ==0:
+        image_name = "sample.png"
+      else:
+        image_name = "sample_"+str(class_n)+".png"
 
     with tf.io.gfile.GFile(
         os.path.join(this_sample_dir, image_name), "wb") as fout:
@@ -315,7 +318,9 @@ def visualize(config, workdir, visualization_folder="viz"):
   sampling_shape = (config.eval.batch_size,
                     config.data.num_channels,
                     config.data.image_size, config.data.image_size)
-  if config.sampling.type == 'multivariate':
+  if config.training.conditional_model == 'equal_energy':
+      sampling_fn = sampling_equal_energy.get_sampling_fn(config, sde, sampling_shape, inverse_scaler, sampling_eps)
+  elif config.sampling.type == 'multivariate':
     sampling_fn = sampling_multivariate.get_sampling_fn(config, sde, sampling_shape, inverse_scaler, sampling_eps)
   else:
     sampling_fn = sampling.get_sampling_fn(config, sde, sampling_shape, inverse_scaler, sampling_eps)
@@ -350,7 +355,20 @@ def visualize(config, workdir, visualization_folder="viz"):
   sample_dir = os.path.join(viz_dir, "sample")
   score_dir = os.path.join(viz_dir, "score_plot")
 
-  if config.sampling.type == 'multivariate' and config.sampling.plot_score:
+  if config.training.conditional_model == 'equal_energy':
+    class_n = 0
+    latent = torch.zeros(3)
+    latent[class_n] = 0.5
+
+    class_n_2 = 0
+    latent_2 = torch.zeros(3)
+    latent_2[class_n_2] = 0.7
+
+    latent_stack = torch.cat((latent.unsqueeze(-1), latent_2.unsqueeze(-1)), dim=-1)
+    sample, n = sampling_fn(score_model, latent_stack)
+    plot_samples_conditional(sample_dir, sample, 12.0, [0.5,0.7])
+
+  elif config.sampling.type == 'multivariate' and config.sampling.plot_score:
     sample, sample_stack, n, score_stack = sampling_fn(score_model, return_score='score')
     plot_scores(score_dir, score_stack, ckpt)
     plot_samples_multivariate(sample_dir, sample, sample_stack, ckpt)

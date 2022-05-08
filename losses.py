@@ -16,6 +16,7 @@
 """All functions related to loss computation and optimization.
 """
 
+from cv2 import mean
 import torch
 import torch.optim as optim
 import numpy as np
@@ -31,6 +32,19 @@ def score_divergence(score1, score2):
   divergence = (score1/norm1.unsqueeze(1) - score2/norm2.unsqueeze(1))**2
   out = divergence.mean()
   return out
+
+def compute_ortho_loss(s1, s2):
+  prod = s1*s2
+  prod = prod.view(prod.shape[0], -1)
+  prod = prod.mean(dim=0)
+  loss = (prod**2).mean()
+  return loss
+
+def compute_variation_loss(alpha):
+  #alpha is B*K 
+  var = torch.var(alpha, dim=0, unbiased=False)
+  neg_mean_var = -torch.mean(var)
+  return neg_mean_var
 
 
 
@@ -118,6 +132,163 @@ def get_equal_energy_loss_fn(sde, train, reduce_mean=True, continuous=True, like
 
   return loss_fn
 
+def get_latent_loss_fn(sde, train, reduce_mean=True, continuous=True, likelihood_weighting=True, eps=1e-5, gamma=0.5):
+  """Create a loss function for training with arbirary SDEs.
+  Args:
+    sde: An `sde_lib.SDE` object that represents the forward SDE.
+    train: `True` for training loss and `False` for evaluation loss.
+    reduce_mean: If `True`, average the loss across data dimensions. Otherwise sum the loss across data dimensions.
+    continuous: `True` indicates that the model is defined to take continuous time steps. Otherwise it requires
+      ad-hoc interpolation to take continuous time steps.
+    likelihood_weighting: If `True`, weight the mixture of score matching losses
+      according to https://arxiv.org/abs/2101.09258; otherwise use the weighting recommended in our paper.
+    eps: A `float` number. The smallest time step to sample from.
+  Returns:
+    A loss function.
+  """
+  reduce_op = torch.mean if reduce_mean else lambda *args, **kwargs: 0.5 * torch.sum(*args, **kwargs)
+
+  def loss_fn(model, batch):
+    """Compute the loss function.
+    Args:
+      model: A score model.
+      batch: A mini-batch of training data.
+    Returns:
+      loss: A scalar that represents the average loss value across the mini-batch.
+    """
+    beta = 0.1
+
+    score_fn = mutils.get_latent_score_fn(sde, model, train=train, continuous=continuous)
+    t = torch.rand(batch.shape[0], device=batch.device) * (sde.T - eps) + eps
+    z = torch.randn_like(batch)
+    mean, std = sde.marginal_prob(batch, t)
+    perturbed_data = mean + std[:, None, None, None] * z
+    score = score_fn(perturbed_data, t, batch)
+    # loss_div = score_divergence(score, score2)
+    
+
+    if not likelihood_weighting:
+      losses = torch.square(score * std[:, None, None, None] + z)
+      losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1)
+    else:
+      g2 = sde.sde(torch.zeros_like(batch), t)[1] ** 2
+      losses = torch.square(score + z / std[:, None, None, None])
+      losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1) * g2
+
+    loss = torch.mean(losses) 
+    return loss
+
+  return loss_fn
+
+def get_loss_fn_latent_factor(sde, train, reduce_mean=True, continuous=True, likelihood_weighting=True, eps=1e-5, gamma=0.5):
+  """Create a loss function for training with arbirary SDEs.
+  Args:
+    sde: An `sde_lib.SDE` object that represents the forward SDE.
+    train: `True` for training loss and `False` for evaluation loss.
+    reduce_mean: If `True`, average the loss across data dimensions. Otherwise sum the loss across data dimensions.
+    continuous: `True` indicates that the model is defined to take continuous time steps. Otherwise it requires
+      ad-hoc interpolation to take continuous time steps.
+    likelihood_weighting: If `True`, weight the mixture of score matching losses
+      according to https://arxiv.org/abs/2101.09258; otherwise use the weighting recommended in our paper.
+    eps: A `float` number. The smallest time step to sample from.
+  Returns:
+    A loss function.
+  """
+  reduce_op = torch.mean if reduce_mean else lambda *args, **kwargs: 0.5 * torch.sum(*args, **kwargs)
+
+  def loss_fn(model, batch):
+    """Compute the loss function.
+    Args:
+      model: A score model.
+      batch: A mini-batch of training data.
+    Returns:
+      loss: A scalar that represents the average loss value across the mini-batch.
+    """
+    beta = 0.1
+
+    score_fn = mutils.get_score_fn_latent_factor(sde, model, train=train, continuous=continuous)
+    t = torch.rand(batch.shape[0], device=batch.device) * (sde.T - eps) + eps
+    z = torch.randn_like(batch)
+    mean, std = sde.marginal_prob(batch, t)
+    perturbed_data = mean + std[:, None, None, None] * z
+    score1, score2 = score_fn(perturbed_data, t, batch)
+    # loss_div = score_divergence(score, score2)
+    
+
+    if not likelihood_weighting:
+      losses = torch.square((score1+score2) * std[:, None, None, None] + z)
+      losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1)
+      loss_ortho = compute_ortho_loss(score1, score2)
+      # loss_ortho = compute_ortho_loss((score1* std[:, None, None, None] + z), (score2* std[:, None, None, None] + z))
+      # loss_ortho = torch.mean((score1* std[:, None, None, None] + z)*(score2* std[:, None, None, None] + z))
+    else:
+      g2 = sde.sde(torch.zeros_like(batch), t)[1] ** 2
+      losses = torch.square((score1+score2) + z / std[:, None, None, None])
+      losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1) * g2
+      loss_ortho = compute_ortho_loss(score1, score2 )
+      # loss_ortho = compute_ortho_loss((score1 + z / std[:, None, None, None]), (score2 + z / std[:, None, None, None]))
+      # loss_ortho = torch.mean((score1 + z / std[:, None, None, None])*(score2 + z / std[:, None, None, None]))
+
+    loss = torch.mean(losses) + beta*loss_ortho
+    return loss
+
+  return loss_fn
+
+def get_loss_fn_basis(sde, train, reduce_mean=True, continuous=True, likelihood_weighting=True, eps=1e-5, gamma=0.5):
+  """Create a loss function for training with arbirary SDEs.
+  Args:
+    sde: An `sde_lib.SDE` object that represents the forward SDE.
+    train: `True` for training loss and `False` for evaluation loss.
+    reduce_mean: If `True`, average the loss across data dimensions. Otherwise sum the loss across data dimensions.
+    continuous: `True` indicates that the model is defined to take continuous time steps. Otherwise it requires
+      ad-hoc interpolation to take continuous time steps.
+    likelihood_weighting: If `True`, weight the mixture of score matching losses
+      according to https://arxiv.org/abs/2101.09258; otherwise use the weighting recommended in our paper.
+    eps: A `float` number. The smallest time step to sample from.
+  Returns:
+    A loss function.
+  """
+  reduce_op = torch.mean if reduce_mean else lambda *args, **kwargs: 0.5 * torch.sum(*args, **kwargs)
+
+  def loss_fn(model, batch):
+    """Compute the loss function.
+    Args:
+      model: A score model.
+      batch: A mini-batch of training data.
+    Returns:
+      loss: A scalar that represents the average loss value across the mini-batch.
+    """
+    beta = 0.1
+
+    score_fn = mutils.get_score_fn_basis(sde, model, train=train, continuous=continuous)
+    t = torch.rand(batch.shape[0], device=batch.device) * (sde.T - eps) + eps
+    z = torch.randn_like(batch)
+    mean, std = sde.marginal_prob(batch, t)
+    perturbed_data = mean + std[:, None, None, None] * z
+    scores, alpha = score_fn(perturbed_data, t, batch)
+    loss_variation = compute_variation_loss(alpha)
+    alpha = alpha.unsqueeze(1).unsqueeze(2).unsqueeze(3)
+    wtd_score = torch.mean(scores*alpha, dim = -1)
+    # loss_div = score_divergence(score, score2)
+    
+
+    if not likelihood_weighting:
+      losses = torch.square(wtd_score * std[:, None, None, None] + z)
+      losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1)
+      # loss_ortho = compute_ortho_loss((score1* std[:, None, None, None] + z), (score2* std[:, None, None, None] + z))
+      # loss_ortho = torch.mean((score1* std[:, None, None, None] + z)*(score2* std[:, None, None, None] + z))
+    else:
+      g2 = sde.sde(torch.zeros_like(batch), t)[1] ** 2
+      losses = torch.square(wtd_score + z / std[:, None, None, None])
+      losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1) * g2
+      # loss_ortho = compute_ortho_loss((score1 + z / std[:, None, None, None]), (score2 + z / std[:, None, None, None]))
+      # loss_ortho = torch.mean((score1 + z / std[:, None, None, None])*(score2 + z / std[:, None, None, None]))
+
+    loss = torch.mean(losses) +beta*loss_variation
+    return loss
+
+  return loss_fn
+
 def get_sde_loss_fn(sde, train, reduce_mean=True, continuous=True, likelihood_weighting=True, eps=1e-5):
   """Create a loss function for training with arbirary SDEs.
   Args:
@@ -161,6 +332,51 @@ def get_sde_loss_fn(sde, train, reduce_mean=True, continuous=True, likelihood_we
     return loss
 
   return loss_fn
+
+def get_loss_fn_label(sde, train, reduce_mean=True, continuous=True, likelihood_weighting=True, eps=1e-5):
+  """Create a loss function for training with arbirary SDEs.
+  Args:
+    sde: An `sde_lib.SDE` object that represents the forward SDE.
+    train: `True` for training loss and `False` for evaluation loss.
+    reduce_mean: If `True`, average the loss across data dimensions. Otherwise sum the loss across data dimensions.
+    continuous: `True` indicates that the model is defined to take continuous time steps. Otherwise it requires
+      ad-hoc interpolation to take continuous time steps.
+    likelihood_weighting: If `True`, weight the mixture of score matching losses
+      according to https://arxiv.org/abs/2101.09258; otherwise use the weighting recommended in our paper.
+    eps: A `float` number. The smallest time step to sample from.
+  Returns:
+    A loss function.
+  """
+  reduce_op = torch.mean if reduce_mean else lambda *args, **kwargs: 0.5 * torch.sum(*args, **kwargs)
+
+  def loss_fn(model, batch, class_label):
+    """Compute the loss function.
+    Args:
+      model: A score model.
+      batch: A mini-batch of training data.
+    Returns:
+      loss: A scalar that represents the average loss value across the mini-batch.
+    """
+    score_fn = mutils.get_score_fn_label(sde, model, train=train, continuous=continuous)
+    t = torch.rand(batch.shape[0], device=batch.device) * (sde.T - eps) + eps
+    z = torch.randn_like(batch)
+    mean, std = sde.marginal_prob(batch, t)
+    perturbed_data = mean + std[:, None, None, None] * z
+    score = score_fn(perturbed_data, t, class_label)
+
+    if not likelihood_weighting:
+      losses = torch.square(score * std[:, None, None, None] + z)
+      losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1)
+    else:
+      g2 = sde.sde(torch.zeros_like(batch), t)[1] ** 2
+      losses = torch.square(score + z / std[:, None, None, None])
+      losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1) * g2
+
+    loss = torch.mean(losses)
+    return loss
+
+  return loss_fn
+
 
 
 def get_smld_loss_fn(vesde, train, reduce_mean=False):
@@ -224,8 +440,21 @@ def get_step_fn(sde, train, optimize_fn=None, reduce_mean=False, continuous=True
   Returns:
     A one-step function for training or evaluation.
   """
-  if config.training.conditional_model == 'equal_energy':
+  if config.training.conditional_model == 'label':
+    loss_fn = get_loss_fn_label(sde, train, reduce_mean=reduce_mean,
+                              continuous=True, likelihood_weighting=likelihood_weighting)
+  elif config.training.conditional_model == 'basis':
+    loss_fn = get_loss_fn_basis(sde, train, reduce_mean=reduce_mean,
+                              continuous=True, likelihood_weighting=likelihood_weighting)
+  elif config.training.conditional_model == 'equal_energy':
     loss_fn = get_equal_energy_loss_fn(sde, train, reduce_mean=reduce_mean,
+                              continuous=True, likelihood_weighting=likelihood_weighting)
+  
+  elif config.training.conditional_model == 'latent':
+    loss_fn = get_latent_loss_fn(sde, train, reduce_mean=reduce_mean,
+                              continuous=True, likelihood_weighting=likelihood_weighting)
+  elif config.training.conditional_model == 'latent_factor':
+    loss_fn = get_loss_fn_latent_factor(sde, train, reduce_mean=reduce_mean,
                               continuous=True, likelihood_weighting=likelihood_weighting)
 
   elif continuous:
@@ -241,7 +470,7 @@ def get_step_fn(sde, train, optimize_fn=None, reduce_mean=False, continuous=True
     else:
       raise ValueError(f"Discrete training for {sde.__class__.__name__} is not recommended.")
 
-  def step_fn(state, batch):
+  def step_fn(state, batch, class_label=None):
     """Running one step of training or evaluation.
     This function will undergo `jax.lax.scan` so that multiple steps can be pmapped and jit-compiled together
     for faster execution.
@@ -256,7 +485,10 @@ def get_step_fn(sde, train, optimize_fn=None, reduce_mean=False, continuous=True
     if train:
       optimizer = state['optimizer']
       optimizer.zero_grad()
-      loss = loss_fn(model, batch)
+      if class_label is not None:
+        loss = loss_fn(model, batch, class_label)
+      else:
+        loss = loss_fn(model, batch)
       loss.backward()
       optimize_fn(optimizer, model.parameters(), step=state['step'])
       state['step'] += 1
@@ -266,7 +498,10 @@ def get_step_fn(sde, train, optimize_fn=None, reduce_mean=False, continuous=True
         ema = state['ema']
         ema.store(model.parameters())
         ema.copy_to(model.parameters())
-        loss = loss_fn(model, batch)
+        if class_label is not None:
+          loss = loss_fn(model, batch, class_label)
+        else:
+          loss = loss_fn(model, batch)
         ema.restore(model.parameters())
 
     return loss
