@@ -252,6 +252,58 @@ class SDE(abc.ABC):
         return rev_f, rev_G, rev_f_stack
 
     return RSDE_conditional()
+  
+  def reverse_weighted(self, score_fn, probability_flow=False):
+    """Create the reverse-time SDE/ODE.
+        The reverse conditional can be used for the generation with conditional latent variables.
+
+    Args:
+      score_fn: A time-dependent score-based model that takes x and t and returns the score.
+      probability_flow: If `True`, create the reverse-time ODE used for probability flow sampling.
+    """
+    N = self.N
+    T = self.T
+    sde_fn = self.sde
+    discretize_fn = self.discretize
+
+    # Build the class for reverse-time SDE.
+    class RSDE_conditional(self.__class__):
+      def __init__(self):
+        self.N = N
+        self.probability_flow = probability_flow
+
+      @property
+      def T(self):
+        return T
+
+      def sde(self, x, t, batch, idx):
+        """Create the drift and diffusion functions for the reverse SDE/ODE."""
+
+        drift, diffusion = sde_fn(x, t)
+        scores_list, alpha = score_fn(x, t, batch)
+        if idx == 'sum':
+          
+          score = (scores_list*alpha.unsqueeze(1).unsqueeze(2).unsqueeze(3)).mean(-1)
+        else:
+          score = 0.1*scores_list[:,:,:,:,idx]
+
+        drift = drift - diffusion[:, None, None, None] ** 2 * score * (0.5 if self.probability_flow else 1.)
+        # drift_stack = drift.unsqueeze(-1) - diffusion[:, None, None, None, None] ** 2 * score_stack * (0.5 if self.probability_flow else 1.)
+        # Set the diffusion function to zero for ODEs.
+        diffusion = 0. if self.probability_flow else diffusion
+        return drift, diffusion
+
+      def discretize(self, x, t):
+        """Create discretized iteration rules for the reverse diffusion sampler."""
+        f, G = discretize_fn(x, t)
+        score, score_stack = score_fn(x, t)
+        rev_f = f - G[:, None, None, None] ** 2 * score * (0.5 if self.probability_flow else 1.)
+        rev_G = torch.zeros_like(G) if self.probability_flow else G
+        rev_f_stack = f - G[:, None, None, None] ** 2 * score_stack * (0.5 if self.probability_flow else 1.)
+        return rev_f, rev_G, rev_f_stack
+
+    return RSDE_conditional()
+
   def reverse_conditional_swap(self, score_fn, probability_flow=False):
     """Create the reverse-time SDE/ODE.
         The reverse conditional can be used for the generation with conditional latent variables.

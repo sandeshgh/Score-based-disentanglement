@@ -25,6 +25,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import functools
 import torchvision
+from scipy.fft import dct
+import numpy as np
 
 from . import utils, layers, normalization
 
@@ -1462,7 +1464,7 @@ class DDPM_latent_factor(nn.Module):
 
 @utils.register_model(name='ddpm_basis')
 class DDPM_basis(nn.Module):
-  def __init__(self, config, latent_cond_dim =5):
+  def __init__(self, config, latent_cond_dim =3):
     super().__init__()
     self.cond_decoder_1 = DDPM_conditional(config=config, latent_cond_dim=latent_cond_dim)
     # self.cond_decoder_2 = DDPM_conditional(config=config, latent_cond_dim=latent_cond_dim)
@@ -1472,14 +1474,14 @@ class DDPM_basis(nn.Module):
     self.encoder_linear = nn.Linear(1000,latent_cond_dim)
     self.latent_cond_dim = latent_cond_dim
     self.ddpm = DDPM(config=config)
-    self.D = self.compute_dct_basis(latent_cond_dim, config.device)
+    self.W = self.compute_dct(latent_cond_dim)
 
-  def compute_dct(self, n, device):
+  def compute_dct(self, n):
   #computes a matrix of size n*n such that it can be used to perform discrete cosine transform
   # note that axis =1 means that the columns are the basis, i.e fist col has all the same values
 
     D = dct(np.eye(n), axis =1)
-    W = torch.from_numpy(D).float().to(device)
+    W = torch.from_numpy(D).float()
     return W
 
   def encode(self, x):
@@ -1504,7 +1506,7 @@ class DDPM_basis(nn.Module):
   
   def forward_generate(self, x_tilde, labels, latent_factor):
     # score1 = self.decode(x_tilde,labels)
-    score1 = self.cond_decoder_1(x_tilde,labels, torch.mm(latent_factor,self.W))
+    score1 = self.cond_decoder_1(x_tilde,labels, torch.mm(latent_factor,self.W.to(latent_factor.device)))
     # score2 = self.cond_decoder_2(x_tilde,labels, latent_factor)
     # score3 = self.cond_decoder_3(x_tilde,labels, latent_factor)
     # scores = torch.cat((score1.unsqueeze(-1), score2.unsqueeze(-1), score3.unsqueeze(-1)), dim=-1)
@@ -1517,7 +1519,7 @@ class DDPM_basis(nn.Module):
     # score1 = self.cond_decoder_1(x_tilde,labels, latent[:, :self.latent_cond_dim])
     scores_stack = []
     for i in range(self.latent_cond_dim):
-      score = self.cond_decoder_1(x_tilde,labels, torch.mm(latent[:,:,0], self.W)).unsqueeze(-1)
+      score = self.cond_decoder_1(x_tilde,labels, torch.mm(latent[:,:,0], self.W.to(latent.device))).unsqueeze(-1)
       scores_stack.append(score)
       # score2 = self.cond_decoder_1(x_tilde,labels, latent[:,:,1])
       # score3 = self.cond_decoder_1(x_tilde,labels, latent[:,:,2])
