@@ -108,6 +108,15 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False):
     def resize_op(img):
       img = tf.image.convert_image_dtype(img, tf.float32)
       return tf.image.resize(img, [config.data.image_size, config.data.image_size], antialias=True)
+  
+  elif config.data.dataset == 'dsprites':
+    dataset_builder = tfds.builder('dsprites')
+    train_split_name = 'train'
+    eval_split_name = 'train'
+
+    def resize_op(img):
+      img = tf.image.convert_image_dtype(img, tf.float32)
+      return tf.image.resize(img, [config.data.image_size, config.data.image_size], antialias=True)
 
   elif config.data.dataset == 'CELEBA':
     dataset_builder = tfds.builder('celeb_a')
@@ -161,6 +170,20 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False):
       if uniform_dequantization:
         img = (tf.random.uniform(img.shape, dtype=tf.float32) + img * 255.) / 256.
       return dict(image=img, label=None)
+  
+  elif config.data.dataset == 'dsprites':
+    def preprocess_fn(d):
+      """Basic preprocessing function scales data to [0, 1) and randomly flips."""
+      # img = resize_op(d['image'])
+      img = d['image']
+      if config.data.random_flip and not evaluation:
+        img = tf.image.random_flip_left_right(img)
+      if uniform_dequantization:
+        img = (tf.random.uniform(img.shape, dtype=tf.float32) + img * 255.) / 256.
+      all_labels = list(d.keys())
+      out = dict(image=img, label=d.get(all_labels[1]))
+
+      return out
 
   else:
     def preprocess_fn(d):
@@ -170,8 +193,9 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False):
         img = tf.image.random_flip_left_right(img)
       if uniform_dequantization:
         img = (tf.random.uniform(img.shape, dtype=tf.float32) + img * 255.) / 256.
+      out = dict(image=img, label=d.get('label', None))
 
-      return dict(image=img, label=d.get('label', None))
+      return out
 
   def create_dataset(dataset_builder, split):
     dataset_options = tf.data.Options()

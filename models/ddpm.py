@@ -1187,11 +1187,11 @@ class DDPM_conditional(nn.Module):
 
 @utils.register_model(name='ddpm_latent')
 class DDPM_latent(nn.Module):
-  def __init__(self, config, latent_cond_dim =16):
+  def __init__(self, config, latent_cond_dim =8):
     super().__init__()
     self.act = act = get_act(config)
     self.register_buffer('sigmas', torch.tensor(utils.get_sigmas(config)))
-
+    latent_cond_dim = config.model.latent_dim
     self.nf = nf = config.model.nf
     ch_mult = config.model.ch_mult
     self.num_res_blocks = num_res_blocks = config.model.num_res_blocks
@@ -1253,7 +1253,7 @@ class DDPM_latent(nn.Module):
 
     assert not hs_c
     modules.append(nn.GroupNorm(num_channels=in_ch, num_groups=32, eps=1e-6))
-    modules.append(conv3x3(in_ch, 3, init_scale=0.))
+    modules.append(conv3x3(in_ch, config.data.num_channels, init_scale=0.))
     self.all_modules = nn.ModuleList(modules)
 
     self.scale_by_sigma = config.model.scale_by_sigma
@@ -1263,7 +1263,7 @@ class DDPM_latent(nn.Module):
     latent_dim = 64
     encode_vector_length = latent_cond_dim
     latent_dim_expand = 16
-    self.embed_conv1 = nn.Conv2d(3, filter_dim, kernel_size=3, stride=1, padding=1)
+    self.embed_conv1 = nn.Conv2d(config.data.num_channels, filter_dim, kernel_size=3, stride=1, padding=1)
     self.embed_layer1 = CondResBlockNoLatent(filters=filter_dim, rescale=False, downsample=True)
     self.embed_layer2 = CondResBlockNoLatent(filters=filter_dim, rescale=False, downsample=True)
     self.embed_layer3 = CondResBlockNoLatent(filters=filter_dim, rescale=False, downsample=True)
@@ -1274,7 +1274,7 @@ class DDPM_latent(nn.Module):
     self.layer_encode = CondResBlock(rescale=False, downsample=False, latent_dim=encode_vector_length, filters=encode_vector_length)
     self.layer1 = CondResBlock(rescale=False, downsample=False, latent_dim=encode_vector_length, filters=encode_vector_length)
     self.layer2 = CondResBlock(downsample=False, latent_dim=encode_vector_length, filters=encode_vector_length)
-    self.begin_conv = nn.Sequential(nn.Conv2d(3, filter_dim, kernel_size = 3, stride=1, padding=1),
+    self.begin_conv = nn.Sequential(nn.Conv2d(config.data.num_channels, filter_dim, kernel_size = 3, stride=1, padding=1),
                                         nn.Conv2d(filter_dim, int(filter_dim/2), 3, stride=1, padding=1))
     self.upconv = nn.Conv2d(in_channels=64, out_channels=filter_dim, kernel_size=3, padding=1)
     self.encoder = torchvision.models.resnet18(pretrained = False)
@@ -1398,6 +1398,9 @@ class DDPM_latent(nn.Module):
   #   return self.regularization_loss
 
   def forward(self, x_tilde, labels, x):
+    if x.shape[1]==1:
+      x = x.repeat(1, 3, 1, 1)
+
     latent = self.encode(x)
     # self.compute_regularization_loss(latent)
     # latent1, latent2 = self.get_latent(latent_prob)
@@ -1453,6 +1456,8 @@ class DDPM_latent_factor(nn.Module):
 
 
   def forward(self, x_tilde, labels, x):
+    if x.shape[1]==1:
+      x = x.repeat(1, 3, 1, 1)
     latent = self.encode(x)
 
     # score1 = self.cond_decoder_1(x_tilde,labels, latent[:, :self.latent_cond_dim])

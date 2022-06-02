@@ -28,9 +28,9 @@ def get_default_configs():
 
   # evaluation
   config.eval = evaluate = ml_collections.ConfigDict()
-  evaluate.begin_ckpt = 3
-  evaluate.end_ckpt = 4
-  evaluate.batch_size = 128#960
+  evaluate.begin_ckpt = 77
+  evaluate.end_ckpt = 78
+  evaluate.batch_size = 32#960
   evaluate.enable_sampling = False
   evaluate.num_samples = 50000
   evaluate.enable_loss = True
