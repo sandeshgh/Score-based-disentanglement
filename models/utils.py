@@ -337,7 +337,7 @@ def get_score_fn_label(sde, model, train=False, continuous=False):
 
   return score_fn
 
-def get_latent_score_fn(sde, model, train=False, continuous=False, generate = False):
+def get_latent_score_fn(sde, model, train=False, continuous=False, generate = False, variational=False):
   """Wraps `score_fn` so that the model output corresponds to a real time-dependent score function.
   Args:
     sde: An `sde_lib.SDE` object that represents the forward SDE.
@@ -347,6 +347,9 @@ def get_latent_score_fn(sde, model, train=False, continuous=False, generate = Fa
   Returns:
     A score function.
   """
+  if generate:
+    variational = False
+    
   get_model_fn_latent = get_model_equal_energy_fn
   model_fn = get_model_fn_latent(model, train=train, generate = generate)
 
@@ -358,16 +361,26 @@ def get_latent_score_fn(sde, model, train=False, continuous=False, generate = Fa
         # The maximum value of time embedding is assumed to 999 for
         # continuously-trained models.
         labels = t * 999
-        score = model_fn(x, labels, x_clean)
+        if variational:
+          score, kl_loss = model_fn(x, labels, x_clean)
+        else:
+          score = model_fn(x, labels, x_clean)
         std = sde.marginal_prob(torch.zeros_like(x), t)[1]
       else:
         # For VP-trained models, t=0 corresponds to the lowest noise level
         labels = t * (sde.N - 1)
-        score = model_fn(x, labels, x_clean)
+        if variational:
+          score, kl_loss = model_fn(x, labels, x_clean)
+        else:
+          score = model_fn(x, labels, x_clean)
         std = sde.sqrt_1m_alphas_cumprod.to(labels.device)[labels.long()]
 
       score = -score / std[:, None, None, None]
-      return score
+      if variational:
+        return score, kl_loss
+      else:
+        return score
+
 
   elif isinstance(sde, sde_lib.VESDE):
     def score_fn(x, t, x_clean):
@@ -378,9 +391,12 @@ def get_latent_score_fn(sde, model, train=False, continuous=False, generate = Fa
         labels = sde.T - t
         labels *= sde.N - 1
         labels = torch.round(labels).long()
-
-      score = model_fn(x, labels, x_clean)
-      return score
+      if variational:
+        score, kl_loss = model_fn(x, labels, x_clean)
+        return score, kl_loss
+      else:
+        score = model_fn(x, labels, x_clean)
+        return score
 
   else:
     raise NotImplementedError(f"SDE class {sde.__class__.__name__} not yet supported.")
