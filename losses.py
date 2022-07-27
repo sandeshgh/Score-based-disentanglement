@@ -18,10 +18,12 @@
 
 from cv2 import mean
 import torch
+import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from models import utils as mutils
 from sde_lib import VESDE, VPSDE
+from torchdiffeq import odeint_adjoint as odeint
 
 
 def score_divergence(score1, score2):
@@ -32,6 +34,73 @@ def score_divergence(score1, score2):
   divergence = (score1/norm1.unsqueeze(1) - score2/norm2.unsqueeze(1))**2
   out = divergence.mean()
   return out
+
+def mse_loss(x, y):
+  mse = torch.mean((x-y)**2)
+  return mse
+
+def peek_ode(x_in, model, sde, score_fn, eps=1e-3, variational=False):
+  shape = x_in.shape
+  device = x_in.device
+
+  class ReverseDrift(nn.Module):
+    def __init__(self, sde, score_fn, latent):
+      super().__init__()
+      self.score_fn = score_fn
+      self.latent = latent
+      self.sde = sde
+    
+    def drift_fn(self, x, t, latent):
+      # # score_fn = get_score_fn(self.sde, self.model, train=False, continuous=True)
+      # rsde = self.sde.reverse(self.score_fn, probability_flow=True)
+      # return rsde.sde(x, t, latent)[0]
+      drift, diffusion = self.sde.sde(x, t)
+      if latent is not None:
+        score = self.score_fn(x, t, latent)
+      else:
+        score = self.score_fn(x, t)
+          
+      drift = drift - diffusion[:, None, None, None] ** 2 * score * (0.5)
+      # Set the diffusion function to zero for ODEs.
+      # diffusion = 0. 
+      return drift
+    
+    def forward(self, t, x):
+      vec_t = torch.ones(shape[0], device=x.device) * t
+      drift = self.drift_fn(x, vec_t, self.latent)
+      return drift
+
+    # def ode_func(t, x):
+    #   x = from_flattened_numpy(x, shape).to(device).type(torch.float32)
+    #   vec_t = torch.ones(shape[0], device=x.device) * t
+    #   drift = drift_fn(model, x, vec_t)
+    #   return to_flattened_numpy(drift)
+
+
+  if variational:
+    latent, kl_loss = model.module.encode(x_in)
+  else:
+    latent = model.module.encode(x_in)
+
+  # score_fn = mutils.get_latent_score_fn(sde, model, train=train, continuous=continuous)
+  ode_func = ReverseDrift(sde, score_fn, latent)
+  
+  
+  # sample the latent code from the prior distibution of the SDE.
+  x = sde.prior_sampling(shape).to(device)
+
+  # Black-box ODE solver for the probability flow ODE
+  # {Sandesh Comments: note that the time goes in the reverse direction from T to 0(eps). The reason is that ODE equation is the forward equation going from good image to noise
+  # Here, since we want to sample from the good distribution p(x), we need to go in the reverse of the forward ODE equation, i.e. from noise to good samples, hence the reverse time 
+  # passed to ode solver
+  # Don't be confused by the fact that drift_fn is calling rsde. The ODE is still forward. It's just that forward ODE resembles reverse SDE with a factor of 0.5
+  # Hence, the authors calls rsde with probability_flow =True which takes care of factor 0.5 and gives a forward ODE equations. :D  Sandesh comment ends}
+  sol = odeint(ode_func, x, t=torch.linspace(sde.T, eps, 2).to(x.device), method = 'rk4', rtol=1e-5)
+  # nfe = solution.nfev
+  # x = torch.tensor(solution.y[:, -1]).reshape(shape).to(device).type(torch.float32)
+  # sol = inverse_scaler(sol)
+  return sol
+
 
 def compute_ortho_loss(s1, s2):
   prod = s1*s2
@@ -132,7 +201,7 @@ def get_equal_energy_loss_fn(sde, train, reduce_mean=True, continuous=True, like
 
   return loss_fn
 
-def get_latent_loss_fn(sde, train, reduce_mean=True, continuous=True, likelihood_weighting=True, eps=1e-5, gamma=0.5):
+def get_latent_loss_fn(sde, train, reduce_mean=True, continuous=True, likelihood_weighting=True, eps=1e-5, gamma=5e-2, reconstruction_loss=False):
   """Create a loss function for training with arbirary SDEs.
   Args:
     sde: An `sde_lib.SDE` object that represents the forward SDE.
@@ -175,7 +244,68 @@ def get_latent_loss_fn(sde, train, reduce_mean=True, continuous=True, likelihood
       losses = torch.square(score + z / std[:, None, None, None])
       losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1) * g2
 
-    loss = torch.mean(losses) 
+    loss_score = torch.mean(losses) 
+    if reconstruction_loss:
+      score_fn_gen = mutils.get_latent_score_fn(sde, model, train=train, continuous=continuous, generate=True)
+      peek_generated = peek_ode(batch, model, sde, score_fn_gen)
+      rec_loss = mse_loss(peek_generated, batch)
+      loss = loss_score + gamma*rec_loss
+      return loss, rec_loss, loss_score
+    else:
+      return loss_score
+    
+
+  return loss_fn
+
+def get_variational_latent_loss_fn(sde, train, reduce_mean=True, continuous=True, likelihood_weighting=True, eps=1e-5, gamma=1e-2, reconstruction_loss=False):
+  """Create a loss function for training with arbirary SDEs.
+  Args:
+    sde: An `sde_lib.SDE` object that represents the forward SDE.
+    train: `True` for training loss and `False` for evaluation loss.
+    reduce_mean: If `True`, average the loss across data dimensions. Otherwise sum the loss across data dimensions.
+    continuous: `True` indicates that the model is defined to take continuous time steps. Otherwise it requires
+      ad-hoc interpolation to take continuous time steps.
+    likelihood_weighting: If `True`, weight the mixture of score matching losses
+      according to https://arxiv.org/abs/2101.09258; otherwise use the weighting recommended in our paper.
+    eps: A `float` number. The smallest time step to sample from.
+  Returns:
+    A loss function.
+  """
+  reduce_op = torch.mean if reduce_mean else lambda *args, **kwargs: 0.5 * torch.sum(*args, **kwargs)
+
+  def loss_fn(model, batch):
+    """Compute the loss function.
+    Args:
+      model: A score model.
+      batch: A mini-batch of training data.
+    Returns:
+      loss: A scalar that represents the average loss value across the mini-batch.
+    """
+    beta = 1e-5
+
+    score_fn = mutils.get_latent_score_fn(sde, model, train=train, continuous=continuous, variational = True)
+    t = torch.rand(batch.shape[0], device=batch.device) * (sde.T - eps) + eps
+    z = torch.randn_like(batch)
+    mean, std = sde.marginal_prob(batch, t)
+    perturbed_data = mean + std[:, None, None, None] * z
+    score, kl_loss = score_fn(perturbed_data, t, batch)
+    # loss_div = score_divergence(score, score2)
+    
+
+    if not likelihood_weighting:
+      losses = torch.square(score * std[:, None, None, None] + z)
+      losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1)
+    else:
+      g2 = sde.sde(torch.zeros_like(batch), t)[1] ** 2
+      losses = torch.square(score + z / std[:, None, None, None])
+      losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1) * g2
+
+    loss = torch.mean(losses) + beta*kl_loss.mean()
+    if reconstruction_loss:
+      score_fn_gen = mutils.get_latent_score_fn(sde, model, train=train, continuous=continuous, generate=True)
+      peek_generated = peek_ode(batch, model, sde, score_fn_gen, variational=True)
+      rec_loss = mse_loss(peek_generated, batch)
+      loss = loss + gamma*rec_loss
     return loss
 
   return loss_fn
@@ -451,7 +581,19 @@ def get_step_fn(sde, train, optimize_fn=None, reduce_mean=False, continuous=True
                               continuous=True, likelihood_weighting=likelihood_weighting)
   
   elif config.training.conditional_model == 'latent':
-    loss_fn = get_latent_loss_fn(sde, train, reduce_mean=reduce_mean,
+    if config.training.reconstruction_loss:
+      loss_fn = get_latent_loss_fn(sde, train, reduce_mean=reduce_mean,
+                              continuous=True, likelihood_weighting=likelihood_weighting, reconstruction_loss=True)
+    else:
+      loss_fn = get_latent_loss_fn(sde, train, reduce_mean=reduce_mean,
+                              continuous=True, likelihood_weighting=likelihood_weighting)
+  elif config.training.conditional_model == 'latent_variational':
+    assert config.model.name == 'ddpm_latent_variational', "The model must be variational to use variational method"
+    if config.training.reconstruction_loss:
+      loss_fn = get_variational_latent_loss_fn(sde, train, reduce_mean=reduce_mean,
+                              continuous=True, likelihood_weighting=likelihood_weighting, reconstruction_loss=True)
+    else:
+      loss_fn = get_variational_latent_loss_fn(sde, train, reduce_mean=reduce_mean,
                               continuous=True, likelihood_weighting=likelihood_weighting)
   elif config.training.conditional_model == 'latent_factor':
     loss_fn = get_loss_fn_latent_factor(sde, train, reduce_mean=reduce_mean,
@@ -489,7 +631,10 @@ def get_step_fn(sde, train, optimize_fn=None, reduce_mean=False, continuous=True
         loss = loss_fn(model, batch, class_label)
       else:
         loss = loss_fn(model, batch)
-      loss.backward()
+      if config.training.conditional_model == 'latent' and config.training.reconstruction_loss:
+        loss[0].backward()
+      else:
+        loss.backward()
       optimize_fn(optimizer, model.parameters(), step=state['step'])
       state['step'] += 1
       state['ema'].update(model.parameters())
