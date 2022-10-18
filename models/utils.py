@@ -20,8 +20,8 @@ import torch
 import sde_lib
 import numpy as np
 import os
-os.environ["CUDA_DEVIC_ORDER"]="PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"]="0,2,3"
+# os.environ["CUDA_DEVIC_ORDER"]="PCI_BUS_ID"
+# os.environ["CUDA_VISIBLE_DEVICES"]="0,2,3"
 
 
 
@@ -89,13 +89,24 @@ def get_ddpm_params(config):
   }
 
 
-def create_model(config):
+def create_model(config, model_name = None, device = None):
   """Create the score model."""
-  model_name = config.model.name
+  if not model_name:
+    model_name = config.model.name
   score_model = get_model(model_name)(config)
-  score_model = score_model.to(config.device)
+  if not device:
+    device = config.device
+  score_model = score_model.to(device)
   score_model = torch.nn.DataParallel(score_model)
   return score_model
+
+def create_model_spectral(config):
+  """Create the score model."""
+  model_name = config.model.spectral_model_name
+  model = get_model(model_name)(config)
+  model = model.to(config.device)
+  model = torch.nn.DataParallel(model)
+  return model
 
 
 def get_model_fn(model, train=False):
@@ -260,7 +271,8 @@ def get_score_fn(sde, model, train=False, continuous=False):
         # continuously-trained models.
         labels = t * 999
         score = model_fn(x, labels)
-        std = sde.marginal_prob(torch.zeros_like(x), t)[1]
+        # std = sde.marginal_prob(torch.zeros_like(x), t)[1]
+        std = sde.marginal_std(t)
       else:
         # For VP-trained models, t=0 corresponds to the lowest noise level
         labels = t * (sde.N - 1)
@@ -282,6 +294,61 @@ def get_score_fn(sde, model, train=False, continuous=False):
 
       score = model_fn(x, labels)
       return score
+
+  else:
+    raise NotImplementedError(f"SDE class {sde.__class__.__name__} not yet supported.")
+
+  return score_fn
+
+def get_score_fn_forward_unconditional(sde, model, train=False, continuous=False):
+  """Wraps `score_fn` so that the model output corresponds to a real time-dependent score function.
+  Args:
+    sde: An `sde_lib.SDE` object that represents the forward SDE.
+    model: A score model.
+    train: `True` for training and `False` for evaluation.
+    continuous: If `True`, the score-based model is expected to directly take continuous time steps.
+  Returns:
+    A score function.
+  """
+  # model_fn = get_model_fn(model, train=train)
+  model_fn = model
+  if not train:
+    model_fn.eval()
+  else:
+    model_fn.train()
+
+  if isinstance(sde, sde_lib.VPSDE) or isinstance(sde, sde_lib.subVPSDE):
+    def score_fn(x, t):
+      # Scale neural network output by standard deviation and flip sign
+      if continuous or isinstance(sde, sde_lib.subVPSDE):
+        # For VP-trained models, t=0 corresponds to the lowest noise level
+        # The maximum value of time embedding is assumed to 999 for
+        # continuously-trained models.
+        labels = t * 999
+        score = model_fn.module.forward_uncond(x, labels)
+        # std = sde.marginal_prob(torch.zeros_like(x), t)[1]
+        std = sde.marginal_std(t)
+      else:
+        # For VP-trained models, t=0 corresponds to the lowest noise level
+        labels = t * (sde.N - 1)
+        score = model_fn(x, labels)
+        std = sde.sqrt_1m_alphas_cumprod.to(labels.device)[labels.long()]
+
+      score = -score / std[:, None, None, None]
+      return score
+
+  # elif isinstance(sde, sde_lib.VESDE):
+  #   def score_fn(x, t):
+  #     if continuous:
+  #       labels = sde.marginal_prob(torch.zeros_like(x), t)[1]
+  #     else:
+  #       # For VE-trained models, t=0 corresponds to the highest noise level
+  #       labels = sde.T - t
+  #       labels *= sde.N - 1
+  #       labels = torch.round(labels).long()
+
+  #     score = model_fn(x, labels)
+  #     return score
 
   else:
     raise NotImplementedError(f"SDE class {sde.__class__.__name__} not yet supported.")
@@ -365,7 +432,7 @@ def get_latent_score_fn(sde, model, train=False, continuous=False, generate = Fa
           score, kl_loss = model_fn(x, labels, x_clean)
         else:
           score = model_fn(x, labels, x_clean)
-        std = sde.marginal_prob(torch.zeros_like(x), t)[1]
+        std = sde.marginal_std(t)
       else:
         # For VP-trained models, t=0 corresponds to the lowest noise level
         labels = t * (sde.N - 1)
@@ -375,7 +442,7 @@ def get_latent_score_fn(sde, model, train=False, continuous=False, generate = Fa
           score = model_fn(x, labels, x_clean)
         std = sde.sqrt_1m_alphas_cumprod.to(labels.device)[labels.long()]
 
-      score = -score / std[:, None, None, None]
+      score = -score / (std[:, None, None, None].detach())
       if variational:
         return score, kl_loss
       else:
@@ -402,6 +469,151 @@ def get_latent_score_fn(sde, model, train=False, continuous=False, generate = Fa
     raise NotImplementedError(f"SDE class {sde.__class__.__name__} not yet supported.")
 
   return score_fn
+
+def get_latent_score_fn_predict_multi(sde, model, train=False, continuous=False, generate = False, variational=False):
+  """Wraps `score_fn` so that the model output corresponds to a real time-dependent score function.
+  Args:
+    sde: An `sde_lib.SDE` object that represents the forward SDE.
+    model: A score model.
+    train: `True` for training and `False` for evaluation.
+    continuous: If `True`, the score-based model is expected to directly take continuous time steps.
+  Returns:
+    A score function.
+  """
+  if generate:
+    variational = False
+    
+  # get_model_fn_latent = 
+  model_fn = get_model_equal_energy_fn(model, train=train, generate = generate)
+
+  if isinstance(sde, sde_lib.VPSDE) or isinstance(sde, sde_lib.subVPSDE):
+    def score_fn(x, t, x_clean):
+      # Scale neural network output by standard deviation and flip sign
+      if continuous or isinstance(sde, sde_lib.subVPSDE):
+        # For VP-trained models, t=0 corresponds to the lowest noise level
+        # The maximum value of time embedding is assumed to 999 for
+        # continuously-trained models.
+        labels = t * 999
+        if variational:
+          score, kl_loss = model_fn(x, labels, x_clean)
+        else:
+          score = model_fn(x, labels, x_clean)
+        std = sde.marginal_std(t)
+      else:
+        # For VP-trained models, t=0 corresponds to the lowest noise level
+        labels = t * (sde.N - 1)
+        if variational:
+          score, kl_loss = model_fn(x, labels, x_clean)
+        else:
+          score = model_fn(x, labels, x_clean)
+        std = sde.sqrt_1m_alphas_cumprod.to(labels.device)[labels.long()]
+
+      score = -score / (std[:, None, None, None, None].detach())
+      # score[1] = -score[1] / (std[:, None, None, None].detach())
+      
+      return score
+
+
+  elif isinstance(sde, sde_lib.VESDE):
+    def score_fn(x, t, x_clean):
+      if continuous:
+        labels = sde.marginal_prob(torch.zeros_like(x), t)[1]
+      else:
+        # For VE-trained models, t=0 corresponds to the highest noise level
+        labels = sde.T - t
+        labels *= sde.N - 1
+        labels = torch.round(labels).long()
+      
+      score = model_fn(x, labels, x_clean)
+      return score
+
+  else:
+    raise NotImplementedError(f"SDE class {sde.__class__.__name__} not yet supported.")
+
+  return score_fn
+
+def get_latent_score_fn_spectral(sde, model, train=False, continuous=False, generate = False, variational=False):
+  """Wraps `score_fn` so that the model output corresponds to a real time-dependent score function.
+  Args:
+    sde: An `sde_lib.SDE` object that represents the forward SDE.
+    model: A score model.
+    train: `True` for training and `False` for evaluation.
+    continuous: If `True`, the score-based model is expected to directly take continuous time steps.
+  Returns:
+    A score function.
+  """
+    
+  model_fn = get_model_fn_label(model, train=train)
+
+  if isinstance(sde, sde_lib.Spectral_VPSDE):
+    def score_fn(x, t, latent, z_x):
+      # Scale neural network output by standard deviation and flip sign
+      if continuous:
+        # For VP-trained models, t=0 corresponds to the lowest noise level
+        # The maximum value of time embedding is assumed to 999 for
+        # continuously-trained models.
+        labels = t * 999        
+        score = model_fn(x, labels, latent)
+        std = sde.marginal_prob(torch.zeros_like(x), t, z_x.detach())[1]
+      else:
+        # For VP-trained models, t=0 corresponds to the lowest noise level
+        labels = t * (sde.N - 1)
+        
+        score = model_fn(x, labels, latent)
+        std = sde.sqrt_1m_alphas_cumprod.to(labels.device)[labels.long()]
+
+      score = -score * (std.detach().pow(-1)) #score = -score * (std.detach())  #
+  
+      return score
+
+
+  elif isinstance(sde, sde_lib.VESDE):
+    def score_fn(x, t, x_clean):
+      if continuous:
+        labels = sde.marginal_prob(torch.zeros_like(x), t)[1]
+      else:
+        # For VE-trained models, t=0 corresponds to the highest noise level
+        labels = sde.T - t
+        labels *= sde.N - 1
+        labels = torch.round(labels).long()
+      if variational:
+        score, kl_loss = model_fn(x, labels, x_clean)
+        return score, kl_loss
+      else:
+        score = model_fn(x, labels, x_clean)
+        return score
+
+  else:
+    raise NotImplementedError(f"SDE class {sde.__class__.__name__} not yet supported.")
+
+  return score_fn
+
+def get_score_fn_neural_ode(model, train=False, continuous=False, generate = False):
+  """Wraps `score_fn` so that the model output corresponds to a real time-dependent score function.
+  Args:
+    sde: An `sde_lib.SDE` object that represents the forward SDE.
+    model: A score model.
+    train: `True` for training and `False` for evaluation.
+    continuous: If `True`, the score-based model is expected to directly take continuous time steps.
+  Returns:
+    A score function.
+  """
+    
+  if not train:
+    model.eval()
+  else:
+    model.train()
+    
+
+  def score_fn(x, t, latent):
+
+    score = model(x, t, latent)
+
+    return score
+
+
+  return score_fn
+
 
 def get_score_fn_latent_factor(sde, model, train=False, continuous=False, generate=False):
   """Wraps `score_fn` so that the model output corresponds to a real time-dependent score function.

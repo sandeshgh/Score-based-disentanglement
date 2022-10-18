@@ -19,14 +19,17 @@
 import functools
 
 import torch
+import torch.nn as nn
 import numpy as np
 import abc
 
 from models.utils import from_flattened_numpy, to_flattened_numpy, get_score_fn
 from scipy import integrate
+from utils import data_plot_proj_2D
 import sde_lib
 from models import utils as mutils
 import copy
+from torchdiffeq import odeint_adjoint as odeint
 
 _CORRECTORS = {}
 _PREDICTORS = {}
@@ -619,6 +622,40 @@ def get_latent_analyzer(sde, shape, predictor, corrector, inverse_scaler, snr,
 
   return latent_analyzer
 
+class ReverseDrift(nn.Module):
+    def __init__(self, sde, model, score_fn = None, x_in=None, latent=None):
+      super().__init__()
+      self.model = model
+      self.sde = sde
+      self.x_in = x_in
+      self.score_fn = score_fn
+      self.latent = latent
+      
+    def update_latent(self, lat):
+      self.latent = lat
+    
+    def drift_fn(self, x, t):
+      # # score_fn = get_score_fn(self.sde, self.model, train=False, continuous=True)
+      # rsde = self.sde.reverse(self.score_fn, probability_flow=True)
+      # return rsde.sde(x, t, latent)[0]
+      drift, diffusion = self.sde.sde(x, t)
+      # if latent is None:
+      #   latent = self.model.module.encode(self.x_in)
+      # score_fn = mutils.get_latent_score_fn(self.sde, self.model, train=train, continuous=continuous, generate=True)
+    
+      score = self.score_fn(x, t, self.latent)
+                
+      drift = drift - diffusion[:, None, None, None] ** 2 * score * (0.5)
+      # Set the diffusion function to zero for ODEs.
+      # diffusion = 0. 
+      return drift
+    
+    def forward(self, t, x):
+      shape = x.shape
+      vec_t = torch.ones(shape[0], device=x.device) * t
+      drift = self.drift_fn(x, vec_t)
+      return drift
+
 def get_latent_analyzer_close(sde, shape, predictor, corrector, inverse_scaler, snr,
                    n_steps=1, probability_flow=False, continuous=False,
                    compositional= False, denoise=True, eps=1e-3, device='cuda', config=None):
@@ -675,6 +712,17 @@ def get_latent_analyzer_close(sde, shape, predictor, corrector, inverse_scaler, 
 
     return inverse_scaler(x_mean if denoise else x)
   
+  def generate_samples_ode(ode_func, x, mix = False):
+    sol = odeint(ode_func, x, t=torch.linspace(sde.T, 1e-5, 2).to(x.device), method = 'rk4', rtol=1e-5)
+    sol = sol[-1]
+    
+    return inverse_scaler(sol)
+  
+  def generate_samples_sde(ode_func, x, timesteps, latent, mix = False):
+    sol = odeint(ode_func, x, t=torch.linspace(sde.T, eps, 2).to(x.device), method = 'rk4', rtol=1e-5)
+    
+    return inverse_scaler(sol)
+  
   def modify_latent(z, pos):
     # z1= z+0.2 if z <=0.8 else z - 0.8
     # z2= z+0.4 if z <=0.6 else z - 0.6
@@ -704,7 +752,10 @@ def get_latent_analyzer_close(sde, shape, predictor, corrector, inverse_scaler, 
     
     z_0=torch.zeros_like(latent)
     z2= torch.zeros_like(latent)
-    z2[:,dim]=1
+    z_0[:,dim]=1
+    dim1= dim+1
+    z2[:,dim1%3]=1
+
 
     alpha = torch.linspace(0,1,n_interp).unsqueeze(0).unsqueeze(0).to(latent.device)
     out = z_0.unsqueeze(-1)*(1-alpha) + z2.unsqueeze(-1)*alpha
@@ -724,7 +775,7 @@ def get_latent_analyzer_close(sde, shape, predictor, corrector, inverse_scaler, 
 
 
 
-  def latent_analyzer(model, x_in, n_interp = 10, mode = 'project_one_hot', dim_idx = 1):
+  def latent_analyzer(model, x_in, n_interp = 10, mode = 'project_one_hot', dim_idx = 1, sampler = 'pc', viz_dir = None):
     """ The PC sampler funciton.
 
     Args:
@@ -747,32 +798,27 @@ def get_latent_analyzer_close(sde, shape, predictor, corrector, inverse_scaler, 
         latents_interp_stack = get_one_hot_interp(latent, n_interp =n_interp)
       elif mode == 'test_dim':
         latents_interp_stack = get_dim_interp(latent, n_interp =n_interp, dim = dim_idx)
+      
+      data_plot_proj_2D(latents_interp_stack[0].permute(1,0).cpu().numpy(),viz_dir=viz_dir,idx='interpolation_'+str(dim_idx))
 
       for i in range(latents_interp_stack.shape[-1]):
         latent_i = latents_interp_stack[:,:,i].to(x.device)
         print('latent:', i)
-        out_i = generate_samples(model, x, timesteps, latent_i)
+        if sampler == 'ode':
+          score_fn = mutils.get_latent_score_fn(sde, model, train=False, continuous=continuous, generate=True)
+          ode_func = ReverseDrift(sde, model, score_fn, latent= latent_i)
+          ode_func.update_latent(latent_i)
+
+          out_i = generate_samples_ode(ode_func, x)
+        elif sampler == 'sde':
+          out_i = generate_samples_sde(ode_func, x, timesteps, latent_i)
+        else:
+          out_i = generate_samples(model, x, timesteps, latent_i)
         if i >0:
           out_stack = torch.cat((out_stack,out_i.unsqueeze(-1)), dim=-1)
         else:
           out_stack = out_i.unsqueeze(-1)
 
-      # latent1, latent2, latent3 = latent1.to(x.device), latent2.to(x.device), latent3.to(x.device)
-      # latent4 = latent
-      # print('latent1', latent1)
-      # print('latent2', latent2)
-      # print('latent3', latent3)
-      # latent = latent.unsqueeze(0)
-      # latent = torch.cat(x.shape[0]*[latent], dim = 0).to(x.device)
-      # out1 = generate_samples(model, x, timesteps, latent1)
-      # out2 = generate_samples(model, x, timesteps, latent2)
-      # out3 = generate_samples(model, x, timesteps, latent3)
-      # out4 = generate_samples(model, x, timesteps, latent4)
-
-      # out3 = generate_samples(model, x, timesteps, torch.cat((latent1.unsqueeze(-1), latent2.unsqueeze(-1)), dim=-1), mix = True)
-    
-    
-    # time = sde.N * (n_steps + 1)
     return out_stack
 
   return latent_analyzer

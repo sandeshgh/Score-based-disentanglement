@@ -27,6 +27,7 @@ import functools
 import torchvision
 from scipy.fft import dct
 import numpy as np
+import math
 
 from . import utils, layers, normalization
 
@@ -42,6 +43,70 @@ default_initializer = layers.default_init
 
 def swish(x):
   return x * torch.sigmoid(x)
+
+
+class up_conv_block(nn.Module):
+  def __init__(self, in_ch , out_ch, kernel_size = 3):
+    super(up_conv_block, self).__init__()
+    self.act = nn.ELU()
+    self.upconv = nn.Sequential(
+      nn.ConvTranspose2d(in_ch, out_ch, kernel_size=3),
+      nn.BatchNorm2d(16),
+      nn.ConvTranspose2d(out_ch, out_ch, kernel_size=3),
+      self.act,
+
+    )
+  def forward(self, x):
+    return self.upconv(x)
+
+
+class LinearConv(nn.Module):
+  def __init__(self, in_dim, img_size, out_channel = 1, type = 'sigmoid'):
+    super().__init__()
+    self.act = nn.ELU()
+    self.linear = nn.Sequential(
+      nn.Linear(in_dim, 16),
+      self.act,
+      nn.Linear(16, 64),
+      self.act,
+      nn.Linear(64, 256),
+
+    )
+    
+    self.upconv1 = up_conv_block(1, 16)
+    self.upconv2 = up_conv_block(16, 16)
+    self.upconv3 = up_conv_block(16, 16)
+    self.upconv4 = up_conv_block(16, 16)
+    self.upconv5 = up_conv_block(16, 16)
+    self.upconv6 = up_conv_block(16, 16)
+    self.conv = nn.Conv2d(16, out_channel, kernel_size=3, padding=1)
+    self.softmax = nn.Softmax(dim=-1)
+    self.sigmoid = nn.Sigmoid()
+    self.type = type
+
+
+  def forward(self, x):
+    out = self.linear(x)
+    b, hw = out.shape
+    h = np.sqrt(hw).astype(int)
+    out = out.unsqueeze(1).view(b,1,h,h)
+    
+    out = self.upconv1(out)
+    out = self.upconv2(out)
+    out = self.upconv3(out)
+    out = self.upconv4(out)
+    # out = self.upconv5(out)
+    # out = self.upconv6(out)
+    out = self.conv(out)
+    if self.type == 'softmax':
+      B, C, H, W = out.shape
+      out = self.softmax(out.view(B, C, H*W))
+      out = out.view(B, C, H, W)
+    # else:
+
+    #   out = self.sigmoid(out)
+    return out
+
 
 
 class CondResBlock(nn.Module):
@@ -1061,7 +1126,11 @@ class DDPM_conditional(nn.Module):
 
     assert not hs_c
     modules.append(nn.GroupNorm(num_channels=in_ch, num_groups=32, eps=1e-6))
-    modules.append(conv3x3(in_ch, 3, init_scale=0.))
+    if (config.training.forward_diffusion == 'predict' or config.training.forward_diffusion == 'predict_multi') and config.training.continuous:
+      out_channel_num = config.data.num_channels//2
+    else:
+      out_channel_num = config.data.num_channels
+    modules.append(conv3x3(in_ch, out_channel_num, init_scale=0.))
     self.all_modules = nn.ModuleList(modules)
 
     self.scale_by_sigma = config.model.scale_by_sigma
@@ -1071,7 +1140,7 @@ class DDPM_conditional(nn.Module):
     latent_dim = 64
     encode_vector_length = latent_cond_dim
     latent_dim_expand = 16
-    self.embed_conv1 = nn.Conv2d(3, filter_dim, kernel_size=3, stride=1, padding=1)
+    self.embed_conv1 = nn.Conv2d(config.data.num_channels, filter_dim, kernel_size=3, stride=1, padding=1)
     self.embed_layer1 = CondResBlockNoLatent(filters=filter_dim, rescale=False, downsample=True)
     self.embed_layer2 = CondResBlockNoLatent(filters=filter_dim, rescale=False, downsample=True)
     self.embed_layer3 = CondResBlockNoLatent(filters=filter_dim, rescale=False, downsample=True)
@@ -1082,7 +1151,7 @@ class DDPM_conditional(nn.Module):
     self.layer_encode = CondResBlock(rescale=False, downsample=False, latent_dim=encode_vector_length, filters=encode_vector_length)
     self.layer1 = CondResBlock(rescale=False, downsample=False, latent_dim=encode_vector_length, filters=encode_vector_length)
     self.layer2 = CondResBlock(downsample=False, latent_dim=encode_vector_length, filters=encode_vector_length)
-    self.begin_conv = nn.Sequential(nn.Conv2d(3, filter_dim, kernel_size = 3, stride=1, padding=1),
+    self.begin_conv = nn.Sequential(nn.Conv2d(config.data.num_channels, filter_dim, kernel_size = 3, stride=1, padding=1),
                                         nn.Conv2d(filter_dim, int(filter_dim/2), 3, stride=1, padding=1))
     self.upconv = nn.Conv2d(in_channels=64, out_channels=filter_dim, kernel_size=3, padding=1)
     # self.encoder = torchvision.models.resnet18(pretrained = False)
@@ -1189,6 +1258,7 @@ class DDPM_conditional(nn.Module):
 class DDPM_latent(nn.Module):
   def __init__(self, config, latent_cond_dim =8):
     super().__init__()
+    self.config = config
     self.act = act = get_act(config)
     self.register_buffer('sigmas', torch.tensor(utils.get_sigmas(config)))
     latent_cond_dim = config.model.latent_dim
@@ -1203,6 +1273,7 @@ class DDPM_latent(nn.Module):
 
     AttnBlock = functools.partial(layers.AttnBlock)
     self.conditional = conditional = config.model.conditional
+    self.rotate_basis = config.model.rotate_basis
     ResnetBlock = functools.partial(ResnetBlockDDPM, act=act, temb_dim=4 * nf, dropout=dropout)
     if conditional:
       # Condition on noise levels.
@@ -1281,6 +1352,16 @@ class DDPM_latent(nn.Module):
     self.encoder_linear = nn.Linear(1000, encode_vector_length)
 
     self.ddpm = DDPM(config=config)
+    self.W = self.compute_dct(latent_cond_dim)
+  
+
+  def compute_dct(self, n):
+  #computes a matrix of size n*n such that it can be used to perform discrete cosine transform
+  # note that axis =1 means that the columns are the basis, i.e fist col has all the same values
+
+    D = dct(np.eye(n), axis =1)
+    W = torch.from_numpy(D).float()
+    return W
 
 
   def encode(self, x):
@@ -1293,9 +1374,19 @@ class DDPM_latent(nn.Module):
 
   def decode(self, x, labels):
     return self.ddpm(x,labels)
-
   
   def decode_conditional(self, x, labels, latent):
+    '''
+    A wrapper function to check if we need to rotate basis before applying the conditional latent generation
+    '''
+    if self.rotate_basis:
+      latent = torch.mm(latent, self.W.to(latent.device))
+      return self.decode_conditional_ori(x, labels, latent)
+    else:
+      return self.decode_conditional_ori(x, labels, latent)
+
+  
+  def decode_conditional_ori(self, x, labels, latent):
     modules = self.all_modules
     m_idx = 0
     if self.conditional:
@@ -1392,20 +1483,12 @@ class DDPM_latent(nn.Module):
     # score1 = self.decode(x_tilde,labels)
     score = self.decode_conditional(x_tilde,labels, latent_factor)
     return score
-
-  # def compute_regularization_loss(self, z):
-
-
-  # def get_regularization(self):
-  #   return self.regularization_loss
+ 
 
   def forward(self, x_tilde, labels, x):
     latent = self.encode(x)
-    # self.compute_regularization_loss(latent)
-    # latent1, latent2 = self.get_latent(latent_prob)
-
-    # score1 = self.decode(x_tilde,labels)
-
+    if 'detach' in self.config.training.keys() and self.config.training.detach:
+      latent = latent.detach()
     score = self.decode_conditional(x_tilde,labels, latent)
     # score2 = self.decode_conditional(x_tilde,labels, latent2)
     # out = score
@@ -1792,3 +1875,212 @@ class DDPM_label(nn.Module):
     score = self.cond_decoder(x_tilde, labels, class_label)
    
     return score
+
+
+@utils.register_model(name='ddpm_latent_contrastive')
+class DDPM_latent_contrastive(nn.Module):
+  def __init__(self, config):
+    super().__init__()
+    self.latent_dim = config.model.latent_dim
+    self.cond_decoder = DDPM_conditional(config=config, latent_cond_dim=self.latent_dim)
+    
+    self.encoder = torchvision.models.resnet18(pretrained = False)
+    self.encoder_linear = nn.Linear(1000,self.latent_dim)
+    # self.ddpm = DDPM(config=config)
+    self.rotate_basis = config.model.rotate_basis
+    self.W = self.compute_dct(self.latent_dim)
+
+  def compute_dct(self, n):
+  #computes a matrix of size n*n such that it can be used to perform discrete cosine transform
+  # note that axis =1 means that the columns are the basis, i.e fist col has all the same values
+
+    D = dct(np.eye(n), axis =1)
+    W = torch.from_numpy(D).float()
+    return W
+
+  def encode(self, x):
+    if x.shape[1]==1:
+      x = x.repeat(1, 3, 1, 1)
+    out = self.encoder(x)
+    out = self.encoder_linear(out)
+    out = nn.Softmax(dim=-1)(out)
+    return out
+  
+  def decode(self, x, labels, latent):
+    '''
+    A wrapper function to check if we need to rotate basis before applying the conditional latent generation
+    '''
+    if self.rotate_basis:
+      latent = torch.mm(latent, self.W.to(latent.device))
+      return self.cond_decoder(x, labels, latent)
+    else:
+      return self.cond_decoder(x, labels, latent)
+
+  
+  def forward_generate(self, x_tilde, labels, latent_factor):   
+    score = self.decode(x_tilde,labels, latent_factor)
+    return score
+
+
+  def forward(self, x_tilde, labels, x):
+    latent = self.encode(x)
+    m = latent.shape[0]
+    # assert m%2==0
+    m_2 = int(math.ceil(m/2))
+    n = m-m_2
+    # latent[m_2:] = latent[:n]
+    latent = torch.cat((latent[:m_2], latent[:n]), dim=0)
+    score = self.decode(x_tilde,labels, latent)
+
+    return score
+
+@utils.register_model(name='ddpm_latent_aniso')
+class DDPM_latent_aniso(nn.Module):
+  def __init__(self, config):
+    super().__init__()
+    self.latent_dim = config.model.latent_dim
+    self.cond_decoder = DDPM_conditional(config=config, latent_cond_dim=self.latent_dim)
+    self.rotate_basis = config.model.rotate_basis
+    self.W = self.compute_dct(self.latent_dim)
+
+  def compute_dct(self, n):
+  #computes a matrix of size n*n such that it can be used to perform discrete cosine transform
+  # note that axis =1 means that the columns are the basis, i.e fist col has all the same values
+    D = dct(np.eye(n), axis =1)
+    W = torch.from_numpy(D).float()
+    return W
+  
+  def decode(self, x, labels, latent):
+    '''
+    A wrapper function to check if we need to rotate basis before applying the conditional latent generation
+    '''
+    if self.rotate_basis:
+      latent = torch.mm(latent, self.W.to(latent.device))
+    
+    return self.cond_decoder(x, labels, latent)
+ 
+  def forward_generate(self, x_tilde, labels, latent_factor):   
+    score = self.decode(x_tilde,labels, latent_factor)
+    return score
+
+
+  def forward(self, x_tilde, labels, latent):
+    score = self.decode(x_tilde,labels, latent)
+    return score
+
+@utils.register_model(name='ddpm_latent_aniso_multi')
+class DDPM_latent_aniso_multi(nn.Module):
+  def __init__(self, config):
+    super().__init__()
+    self.latent_dim = config.model.latent_dim
+    self.cond_decoder_0 = DDPM_conditional(config=config, latent_cond_dim=self.latent_dim)
+    self.cond_decoder_1 = DDPM_conditional(config=config, latent_cond_dim=self.latent_dim)
+    self.rotate_basis = config.model.rotate_basis
+    self.W = self.compute_dct(self.latent_dim)
+
+  def compute_dct(self, n):
+  #computes a matrix of size n*n such that it can be used to perform discrete cosine transform
+  # note that axis =1 means that the columns are the basis, i.e fist col has all the same values
+    D = dct(np.eye(n), axis =1)
+    W = torch.from_numpy(D).float()
+    return W
+  
+  def decode(self, x, labels, latent, i):
+    '''
+    A wrapper function to check if we need to rotate basis before applying the conditional latent generation
+    '''
+    x = x[:,:,:,:,i]
+    latent = latent[:,:,i]
+    if self.rotate_basis:
+      latent = torch.mm(latent, self.W.to(latent.device))
+    func = 'self.cond_decoder_'+str(i)+'(x, labels, latent)'
+    out = eval(func)
+    return out
+ 
+  def forward_generate(self, x_tilde, labels, latent_factor): 
+    score_list = []  
+    for i in range(latent_factor.shape[-1]):
+      score = self.decode(x_tilde,labels, latent_factor, i)
+      score_list.append(score.unsqueeze(-1))
+    out = torch.cat((score_list), dim = -1)
+    return out
+
+
+  def forward(self, x_tilde, labels, latents):
+    score_list = []  
+    for i in range(latents.shape[-1]):
+      score = self.decode(x_tilde,labels, latents, i)
+      score_list.append(score.unsqueeze(-1))
+    out = torch.cat((score_list), dim=-1)
+    return out
+    # score = self.decode(x_tilde,labels, latent, 0) + self.decode(x_tilde,labels, latent, 1)
+    # return score
+
+
+    
+
+@utils.register_model(name='encode_resnet')
+class EncodeResnet(nn.Module):
+  def __init__(self, config):
+    super().__init__()
+    self.latent_dim = config.model.latent_dim   
+    self.encoder = torchvision.models.resnet18(pretrained = False)
+    self.encoder_linear = nn.Linear(1000,self.latent_dim)
+    self.decoder_x = LinearConv(self.latent_dim, config.data.image_size)
+
+  def encode(self, x):
+    if x.shape[1]==1:
+      x = x.repeat(1, 3, 1, 1)
+    out = self.encoder(x)
+    out = self.encoder_linear(out)
+    out = nn.Softmax(dim=-1)(out)
+    return out
+  
+  def latent_to_x(self, latent):
+    return self.decoder_x(latent)
+
+  def forward(self, x):
+    latent = self.encode(x)
+    latent_x = self.latent_to_x(latent)
+   
+    return latent, latent_x
+
+
+@utils.register_model(name='encode_resnet_multi')
+class EncodeResnet_multi(nn.Module):
+  def __init__(self, config):
+    super().__init__()
+    self.latent_dim = config.model.latent_dim   
+    self.encoder = torchvision.models.resnet18(pretrained = False)
+    self.encoder_linear_1 = nn.Linear(1000,self.latent_dim)
+    self.encoder_linear_2 = nn.Linear(1000,self.latent_dim)
+    self.decoder_x_1 = LinearConv(self.latent_dim, config.data.image_size)
+    self.decoder_x_2 = LinearConv(self.latent_dim, config.data.image_size)
+
+  def encode(self, x):
+    if x.shape[1]==1:
+      x = x.repeat(1, 3, 1, 1)
+    out = self.encoder(x)
+    out_1 = self.encoder_linear_1(out)
+    out_1 = nn.Softmax(dim=-1)(out_1)
+
+    out_2 = self.encoder_linear_2(out)
+    out_2 = nn.Softmax(dim=-1)(out_2)
+
+    out_ = torch.cat([out_1.unsqueeze(-1), out_2.unsqueeze(-1)], dim=-1)
+
+    return out_
+  
+  def latent_to_x(self, latent):
+    latent_0 , latent_1 = latent[:,:,0], latent[:,:,1]
+    out_1 = self.decoder_x_1(latent_0)
+    out_2 = self.decoder_x_2(latent_1)
+    out = [out_1.unsqueeze(-1), out_2.unsqueeze(-1)]
+    out = torch.cat(out, dim =-1)
+    return out
+
+  def forward(self, x):
+    latent = self.encode(x)
+    latent_x = self.latent_to_x(latent)
+   
+    return latent, latent_x

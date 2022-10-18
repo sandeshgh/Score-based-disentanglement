@@ -26,11 +26,14 @@ import tensorflow as tf
 # import tensorflow_gan as tfgan
 import logging
 # Keep the import below for registering all model definitions
-from models import ddpm #ncsnv2, ncsnpp
+from models import ddpm, unet_autoenc #ncsnv2, ncsnpp
 import losses
-import sampling, sampling_latent, sampling_equal_energy, sampling_latent_factor
+import sampling, sampling_latent, sampling_equal_energy, sampling_latent_factor, sampling_latent_multi
 from models import utils as mutils
 from models.ema import ExponentialMovingAverage
+from models.unet import BeatGANsUNetConfig
+# class BeatGANsAutoencConfig(BeatGANsUNetConfig):
+from models.unet_autoenc import BeatGANsAutoencConfig
 import datasets
 # import evaluation
 import likelihood
@@ -41,6 +44,7 @@ from torch.utils import tensorboard
 from torchvision.utils import make_grid, save_image
 from utils import save_checkpoint, restore_checkpoint
 import torchvision.transforms as transforms
+import matplotlib.pyplot as plt
 
 FLAGS = flags.FLAGS
 
@@ -158,6 +162,39 @@ def plot_samples_multivariate(sample_dir, sample, sample_stack, step):
         os.path.join(this_sample_dir, img_name+".png"), "wb") as fout:
       save_image(image_grid, fout)
 
+def scatter_plot_data(score_model, train_ds, config, scaler, viz_dir, epoch, n_ep=1000 ):
+  score_model.eval()
+  train_iter = iter(train_ds)
+  codes = []
+
+  
+  for idx in range(n_ep):
+    batch = next(train_iter)
+  # batch_idx = 5
+  # for dim_idx in range(8):
+    # if idx >1000:
+    #   break
+    # print('batch index:', idx)
+    eval_batch = torch.from_numpy(batch['image']._numpy()).to(config.device).float()
+    if eval_batch.shape[2]!=config.data.image_size:
+      eval_batch = resize_image(eval_batch, config.data.image_size )
+    eval_batch = eval_batch.permute(0, 3, 1, 2)
+    # eval_batch = eval_batch[batch_idx].repeat(eval_batch.shape[0],1,1,1)
+    eval_batch_model = scaler(eval_batch)
+    with torch.no_grad():
+      c = score_model.module.encode(eval_batch_model)
+    codes.append(c.data.cpu().numpy())
+  
+  codes = np.concatenate(codes, axis=0)
+  codes = convert_to_2D(codes)
+  fig =plt.figure()
+  ax = fig.add_subplot()
+  ax.scatter(codes[:,0], codes[:,1])
+  plt.xlim([-1,1])
+  plt.ylim([-1,1])
+  plt.savefig(viz_dir+'/scatter_'+str(epoch))
+  plt.close()
+
 
 def train(config, workdir):
   """Runs the training pipeline.
@@ -177,7 +214,25 @@ def train(config, workdir):
   writer = tensorboard.SummaryWriter(tb_dir)
 
   # Initialize model.
-  score_model = mutils.create_model(config)
+  if config.model.name == 'ddpm_latent_Adain' or config.model.name == 'ddpm_latent_Adain_multilatent' :
+    
+    # unet_config = BeatGANsUNetConfig(
+    #   image_size = config.data.image_size,
+    #   in_channels= config.data.num_channels,
+    #   # model_channels=
+    #   out_channels=config.data.num_channels
+    # )
+    conf = BeatGANsAutoencConfig()
+    conf.image_size = config.data.image_size
+    conf.in_channels = config.data.num_channels
+    conf.out_channels = config.data.num_channels
+    conf.embed_channels = config.model.latent_dim
+    conf.enc_out_channels = config.model.latent_dim
+    conf.resnet_two_cond = True
+    # conf.model.name = 'ddpm_latent_Adain'
+    score_model = mutils.create_model(conf, model_name = config.model.name, device= config.device)
+  else:
+    score_model = mutils.create_model(config)
   ema = ExponentialMovingAverage(score_model.parameters(), decay=config.model.ema_rate)
   optimizer = losses.get_optimizer(config, score_model.parameters())
   state = dict(optimizer=optimizer, model=score_model, ema=ema, step=0)
@@ -230,7 +285,7 @@ def train(config, workdir):
   if config.training.snapshot_sampling:
     sampling_shape = (config.training.batch_size, config.data.num_channels,
                       config.data.image_size, config.data.image_size)
-    if config.training.conditional_model == 'latent' or config.training.conditional_model == 'latent_variational':
+    if config.training.conditional_model == 'latent' or config.training.conditional_model == 'latent_variational' or config.training.conditional_model == 'latent_multi':
       sampling_fn = sampling_latent.get_sampling_fn(config, sde, sampling_shape, inverse_scaler, sampling_eps) 
     elif config.training.conditional_model == 'latent_factor':
       sampling_fn = sampling_latent_factor.get_sampling_fn(config, sde, sampling_shape, inverse_scaler, sampling_eps) 
@@ -255,11 +310,23 @@ def train(config, workdir):
     # plot_samples(sample_dir, batch, 10000)
     # Execute one training step
     loss = train_step_fn(state, batch)
-    if config.training.conditional_model == 'latent' and config.training.reconstruction_loss:
+    if (config.training.conditional_model == 'latent' and config.training.reconstruction_loss) or (config.training.conditional_model == 'latent_contrastive'):
       if step % config.training.log_freq == 0:
         logging.info("step: %d, training_loss: %.5e, recons_loss: %.5e, score_loss: %.5e," % (step, loss[0].item(), loss[1].item(), loss[2].item() ))
         writer.add_scalar("training_loss", loss[0], step)
         writer.add_scalar("recon_loss", loss[1], step)
+        writer.add_scalar("score_loss", loss[2], step)
+    elif (config.training.conditional_model == 'latent' and config.training.regularization=='highvar') :
+      if step % config.training.log_freq == 0:
+        logging.info("step: %d, training_loss: %.5e, var_loss: %.5e, score_loss: %.5e," % (step, loss[0].item(), loss[1].item(), loss[2].item() ))
+        writer.add_scalar("training_loss", loss[0], step)
+        writer.add_scalar("recon_loss", loss[1], step)
+        writer.add_scalar("score_loss", loss[2], step)
+    elif (config.training.conditional_model == 'latent_multi' and config.training.unconditional_loss) :
+      if step % config.training.log_freq == 0:
+        logging.info("step: %d, training_loss: %.5e, uncond_score_loss: %.5e, score_loss: %.5e," % (step, loss[0].item(), loss[1].item(), loss[2].item() ))
+        writer.add_scalar("training_loss", loss[0], step)
+        writer.add_scalar("uncond_score_loss", loss[1], step)
         writer.add_scalar("score_loss", loss[2], step)
     else:
       if step % config.training.log_freq == 0:
@@ -278,11 +345,21 @@ def train(config, workdir):
       eval_batch = eval_batch.permute(0, 3, 1, 2)
       eval_batch = scaler(eval_batch)
       eval_loss = eval_step_fn(state, eval_batch)
-      if config.training.conditional_model == 'latent' and config.training.reconstruction_loss:
+      if (config.training.conditional_model == 'latent' and config.training.reconstruction_loss) or (config.training.conditional_model == 'latent_contrastive'):
         logging.info("step: %d, eval_loss: %.5e, eval_rec_loss: %.5e, eval_score_loss: %.5e" % (step, eval_loss[0].item(), eval_loss[1].item(), eval_loss[2].item()))
         writer.add_scalar("eval_loss", eval_loss[0].item(), step)
         writer.add_scalar("eval_loss", eval_loss[1].item(), step)
         writer.add_scalar("eval_loss", eval_loss[2].item(), step)
+      elif (config.training.conditional_model == 'latent' and config.training.regularization=='highvar'):
+        logging.info("step: %d, eval_loss: %.5e, eval_var_loss: %.5e, eval_score_loss: %.5e" % (step, eval_loss[0].item(), eval_loss[1].item(), eval_loss[2].item()))
+        writer.add_scalar("eval_loss0", eval_loss[0].item(), step)
+        writer.add_scalar("eval_loss1", eval_loss[1].item(), step)
+        writer.add_scalar("eval_loss2", eval_loss[2].item(), step)
+      elif (config.training.conditional_model == 'latent_multi' and config.training.unconditional_loss):
+        logging.info("step: %d, eval_loss: %.5e, uncond_score_loss: %.5e, eval_score_loss: %.5e" % (step, eval_loss[0].item(), eval_loss[1].item(), eval_loss[2].item()))
+        writer.add_scalar("eval_loss0", eval_loss[0].item(), step)
+        writer.add_scalar("eval_loss1", eval_loss[1].item(), step)
+        writer.add_scalar("eval_loss2", eval_loss[2].item(), step)
       else:
         logging.info("step: %d, eval_loss: %.5e" % (step, eval_loss.item()))
         writer.add_scalar("eval_loss", eval_loss.item(), step)
@@ -297,7 +374,7 @@ def train(config, workdir):
       if config.training.snapshot_sampling:
         ema.store(score_model.parameters())
         ema.copy_to(score_model.parameters())
-        if config.training.conditional_model == 'latent' or config.training.conditional_model == 'latent_variational':
+        if config.training.conditional_model == 'latent' or config.training.conditional_model == 'latent_variational' or config.training.conditional_model == 'latent_multi':
           latent_dim = config.model.latent_dim
           class_n = save_step%latent_dim
           latent = torch.zeros(latent_dim)
@@ -308,9 +385,12 @@ def train(config, workdir):
           sample, n = sampling_fn(score_model, batch)
         else:
           sample, n = sampling_fn(score_model)
-        ema.restore(score_model.parameters())
+        
 
         plot_samples_conditional(sample_dir, torch.cat((batch_orig.unsqueeze(-1),sample.unsqueeze(-1)), dim=-1), step, [0,1])
+        scatter_plot_data(score_model, train_ds, config, scaler, viz_dir = sample_dir, epoch=step, n_ep=1000 )
+
+        ema.restore(score_model.parameters())
         
         # plot_samples(sample_dir, sample, step, class_n) #either single or multivariate
 
@@ -537,7 +617,26 @@ def analyze_close(config, workdir, visualization_folder="viz"):
   inverse_scaler = datasets.get_data_inverse_scaler(config)
 
   # Initialize model
-  score_model = mutils.create_model(config)
+  if config.model.name == 'ddpm_latent_Adain' or config.model.name == 'ddpm_latent_Adain_multilatent' :
+    
+    # unet_config = BeatGANsUNetConfig(
+    #   image_size = config.data.image_size,
+    #   in_channels= config.data.num_channels,
+    #   # model_channels=
+    #   out_channels=config.data.num_channels
+    # )
+    conf = BeatGANsAutoencConfig()
+    conf.image_size = config.data.image_size
+    conf.in_channels = config.data.num_channels
+    conf.out_channels = config.data.num_channels
+    conf.embed_channels = config.model.latent_dim
+    conf.enc_out_channels = config.model.latent_dim
+    conf.resnet_two_cond = True
+    # conf.model.name = 'ddpm_latent_Adain'
+    score_model = mutils.create_model(conf, model_name = config.model.name, device= config.device)
+  else:
+    score_model = mutils.create_model(config)
+  
   optimizer = losses.get_optimizer(config, score_model.parameters())
   ema = ExponentialMovingAverage(score_model.parameters(), decay=config.model.ema_rate)
   state = dict(optimizer=optimizer, model=score_model, ema=ema, step=0)
@@ -558,12 +657,16 @@ def analyze_close(config, workdir, visualization_folder="viz"):
     raise NotImplementedError(f"SDE {config.training.sde} unknown.")
 
   # Build the sampling function when sampling is enabled
+  # analysis_type 
 
   sampling_shape = (config.eval.batch_size,
                     config.data.num_channels,
                     config.data.image_size, config.data.image_size)
+  analysis_type = config.eval.analysis_type
   if config.training.conditional_model == 'latent' or config.training.conditional_model == 'latent_variational':
-    analysis_fn = sampling_latent.get_analysis_fn(config, sde, sampling_shape, inverse_scaler, sampling_eps, type='close')
+    analysis_fn = sampling_latent.get_analysis_fn(config, sde, sampling_shape, inverse_scaler, sampling_eps, type=analysis_type)
+  elif config.training.conditional_model == 'latent_multi':
+    analysis_fn = sampling_latent_multi.get_analysis_fn(config, sde, sampling_shape, inverse_scaler, sampling_eps, type=analysis_type)
   if config.training.conditional_model == 'latent_factor':
     analysis_fn = sampling_latent_factor.get_analysis_fn(config, sde, sampling_shape, inverse_scaler, sampling_eps, mode = 'interpolate')
   
@@ -593,7 +696,7 @@ def analyze_close(config, workdir, visualization_folder="viz"):
       state = restore_checkpoint(ckpt_path, state, device=config.device)
   ema.copy_to(score_model.parameters())
 
-  sample_dir = os.path.join(viz_dir, "analyze")
+  sample_dir = viz_dir
   print('Sample dir', sample_dir)
   # score_dir = os.path.join(viz_dir, "score_plot")
   eval_iter = iter(eval_ds)  # pytype: disable=wrong-arg-types
@@ -608,13 +711,22 @@ def analyze_close(config, workdir, visualization_folder="viz"):
   # for i, batch in enumerate(train_iter):
   batch = next(train_iter)
   batch_idx = 5
-  for dim_idx in range(8):
+  dim_idx = 0
+  mode = 'mix'#'project_one_hot'#'test_dim'#'project_one_hot'
+  for batch_idx in range(0,8):
     print('dim_idx:', dim_idx)
+    print('batch_idx:', batch_idx)
     eval_batch = torch.from_numpy(batch['image']._numpy()).to(config.device).float()
     if eval_batch.shape[2]!=config.data.image_size:
       eval_batch = resize_image(eval_batch, config.data.image_size )
     eval_batch = eval_batch.permute(0, 3, 1, 2)
-    eval_batch = eval_batch[batch_idx].repeat(eval_batch.shape[0],1,1,1)
+    if mode == 'mix':
+      # if it's a mix, then use two images and repeat half half to make up the full batch size
+      eval_batch_1 = eval_batch[batch_idx].repeat(eval_batch.shape[0]//2,1,1,1)
+      eval_batch_2 = eval_batch[batch_idx+1].repeat(eval_batch.shape[0]//2,1,1,1)
+      eval_batch = torch.cat((eval_batch_1, eval_batch_2), dim = 0)
+    else:
+      eval_batch = eval_batch[batch_idx].repeat(eval_batch.shape[0],1,1,1)
     eval_batch_model = scaler(eval_batch)
 
     if config.training.conditional_model == 'latent_factor':
@@ -623,19 +735,157 @@ def analyze_close(config, workdir, visualization_folder="viz"):
       # plot_samples_analysis(sample_dir, samples, step, pos_index)
 
     else:
-      samples = analysis_fn(score_model, eval_batch_model, mode='test_dim', dim_idx=dim_idx)
+      sampler = 'pc'
+      print(mode)
+      samples = analysis_fn(score_model, eval_batch_model, mode=mode, dim_idx=dim_idx, sampler=sampler, viz_dir=sample_dir, batch_idx = batch_idx)
       # samples = torch.cat((sample1.unsqueeze(-1), sample2.unsqueeze(-1), sample3.unsqueeze(-1)), dim =-1)
-    samples=torch.cat((eval_batch.unsqueeze(-1),samples), dim=-1)
-    plot_samples_analysis(sample_dir, samples, step, 'test_dim_'+str(dim_idx)+'_'+str(batch_idx))
+    if config.training.conditional_model == 'latent_multi':
+      samples_a=torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,0,:]), dim=-1)
+      samples_b=torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,1,:]), dim=-1)
+      samples_c=torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,2,:]), dim=-1)
+      samples_sum = torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,3,:]), dim=-1)
+      plot_samples_analysis(sample_dir, samples_a, step, analysis_type+'__'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_a')
+      plot_samples_analysis(sample_dir, samples_b, step, analysis_type+'__'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_b')
+      plot_samples_analysis(sample_dir, samples_c, step, analysis_type+'__'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_c')
+      plot_samples_analysis(sample_dir, samples_sum, step, analysis_type+'__'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_sum')
+    else:
+      samples=torch.cat((eval_batch.unsqueeze(-1),samples), dim=-1)
+      plot_samples_analysis(sample_dir, samples, step, analysis_type+'_'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx))
         # plot_samples_conditional(sample_dir, sample, 12.0, [0.5,0.7])
   # print("Done!")
+
+def rot(U,V):
+  # this converts U to V
+  W=np.cross(U,V)
+  A=np.array([U,W,np.cross(U,W)]).T
+  B=np.array([V,W,np.cross(V,W)]).T
+  return np.matmul(B,np.linalg.inv(A))
+
+def convert_to_2D(x):
+  x = x[:,:3]
+  # we have a vector u in the simplex, x+y+z = 1
+  # we first tranfer it to the origin by x= x-1/3, y = y-1/3,.. 
+  x = x-np.array(1/3)
+  # then that will satisfy x+y+z = 0
+  u = np.array([1,1,1])
+  v = np.array([0,0,1])
+  R = rot(u/np.linalg.norm(u),v) # pass unit vector u
+  y = np.matmul(R,x.T)
+  y = y.T
+  return y
+  
 
 
       
   
+def plot_data(config, workdir, visualization_folder="viz"):
+  # Create directory to eval_folder
+  viz_dir = os.path.join(workdir, visualization_folder)
+  tf.io.gfile.makedirs(viz_dir)
+  print('Plot dir:', viz_dir)
+
+  # Build data pipeline
+  train_ds, eval_ds, _ = datasets.get_dataset(config,
+                                              uniform_dequantization=config.data.uniform_dequantization,
+                                              evaluation=True)
+
+  # Create data normalizer and its inverse
+  scaler = datasets.get_data_scaler(config)
+  inverse_scaler = datasets.get_data_inverse_scaler(config)
+
+  # Initialize model
+  score_model = mutils.create_model(config)
+  optimizer = losses.get_optimizer(config, score_model.parameters())
+  ema = ExponentialMovingAverage(score_model.parameters(), decay=config.model.ema_rate)
+  state = dict(optimizer=optimizer, model=score_model, ema=ema, step=0)
+
+  checkpoint_dir = os.path.join(workdir, "checkpoints")
+
+  begin_ckpt = config.eval.begin_ckpt
+  logging.info("begin checkpoint: %d" % (begin_ckpt,))
+  ckpt = begin_ckpt
+  
+
+  # Wait for 2 additional mins in case the file exists but is not ready for reading
+  ckpt_path = os.path.join(checkpoint_dir, f'checkpoint_{ckpt}.pth')
+  try:
+    state = restore_checkpoint(ckpt_path, state, device=config.device)
+  except:
+    time.sleep(60)
+    try:
+      state = restore_checkpoint(ckpt_path, state, device=config.device)
+    except:
+      time.sleep(120)
+      state = restore_checkpoint(ckpt_path, state, device=config.device)
+  # ema.copy_to(score_model.parameters())
+  score_model = state['model']
+  score_model.eval()
+
+  
+
+  # sample_dir = os.path.join(viz_dir, "analyze")
+  # print('Sample dir', sample_dir)
+  # score_dir = os.path.join(viz_dir, "score_plot")
+  eval_iter = iter(eval_ds)  # pytype: disable=wrong-arg-types
+  train_iter = iter(train_ds)
+
+  # for pos_index in range(7):
+    # print('Analysis .... of idx: ', pos_index)
+  
+  # step = (torch.FloatTensor([ckpt]) + 0.1*torch.FloatTensor([class_n])).item()
+  # step = ckpt
+  codes = []
+  # print('dataloader length', train_iter)
+
+  
+  for idx in range(10000):
+    batch = next(train_iter)
+  # batch_idx = 5
+  # for dim_idx in range(8):
+    # if idx >500:
+    #   break
+    # print('batch index:', idx)
+    eval_batch = torch.from_numpy(batch['image']._numpy()).to(config.device).float()
+    if eval_batch.shape[2]!=config.data.image_size:
+      eval_batch = resize_image(eval_batch, config.data.image_size )
+    eval_batch = eval_batch.permute(0, 3, 1, 2)
+    # eval_batch = eval_batch[batch_idx].repeat(eval_batch.shape[0],1,1,1)
+    eval_batch_model = scaler(eval_batch)
+    c = score_model.module.encode(eval_batch_model)
+    codes.append(c.data.cpu().numpy())
+  
+  codes = np.concatenate(codes, axis=0)
+  codes = convert_to_2D(codes)
+  fig =plt.figure()
+  ax = fig.add_subplot()
+  ax.scatter(codes[:,0], codes[:,1])
 
 
 
+  lines = np.eye(3)
+  lines = convert_to_2D(lines)
+  ax.plot(lines[:,0], lines[:,1], 'r', linestyle='-')
+
+  plt.xlim([np.amin(codes[:,0]),np.amax(codes[:,0])])
+  plt.ylim([np.amin(codes[:,1]),np.amax(codes[:,1])])
+  plt.savefig(viz_dir+'/scatter')
+  plt.close()
+
+def data_plot_proj_2D(codes, viz_dir, idx=0):
+  codes = convert_to_2D(codes)
+  fig =plt.figure()
+  ax = fig.add_subplot()
+  ax.scatter(codes[:,0], codes[:,1])
+
+  lines = np.eye(3)
+  lines = convert_to_2D(lines)
+  ax.plot(lines[:,0], lines[:,1], 'r', linestyle='-')
+
+  plt.xlim([-1,1])
+  plt.ylim([-1,1])
+  plt.savefig(viz_dir+'/scatter'+str(idx))
+  plt.close()
+       
 
 # def evaluate(config,
 #              workdir,
