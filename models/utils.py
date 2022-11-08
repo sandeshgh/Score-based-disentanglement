@@ -429,7 +429,7 @@ def get_latent_score_fn(sde, model, train=False, continuous=False, generate = Fa
         # continuously-trained models.
         labels = t * 999
         if variational:
-          score, kl_loss = model_fn(x, labels, x_clean)
+          score, kl_loss = model_fn(x, labels, x_clean, return_loss = True)
         else:
           score = model_fn(x, labels, x_clean)
         std = sde.marginal_std(t)
