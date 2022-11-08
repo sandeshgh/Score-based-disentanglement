@@ -14,24 +14,31 @@
 # limitations under the License.
 
 # Lint as: python3
-"""Training NCSNv3 on CIFAR-10 with continuous sigmas."""
+"""Training DDPM with sub-VP SDE."""
 
-from configs.default_cifar10_configs import get_default_configs
+from configs.default_dsprites_configs import get_default_configs
 
 
 def get_config():
   config = get_default_configs()
+
   # training
   training = config.training
-  training.sde = 'spectral_vpsde'
+  training.sde = 'subvpsde'
   training.continuous = True
   training.reduce_mean = True
+  training.compositional = False
+  training.conditional_model = 'latent_variational'
+  training.reconstruction_loss = True
+  
 
   # sampling
   sampling = config.sampling
   sampling.method = 'pc'
   sampling.predictor = 'euler_maruyama'
   sampling.corrector = 'none'
+  sampling.type = 'conditional'
+  sampling.plot_score = True
 
   # data
   data = config.data
@@ -39,28 +46,20 @@ def get_config():
 
   # model
   model = config.model
-  model.name = 'ncsnpp'
+  model.name = 'ddpm_latent_variational'
   model.scale_by_sigma = False
   model.ema_rate = 0.9999
   model.normalization = 'GroupNorm'
-  model.nonlinearity = 'swish'
+  model.nonlinearity = 'elu'
   model.nf = 128
   model.ch_mult = (1, 2, 2, 2)
-  model.num_res_blocks = 4
+  model.num_res_blocks = 2
   model.attn_resolutions = (16,)
   model.resamp_with_conv = True
   model.conditional = True
-  model.fir = False
-  model.fir_kernel = [1, 3, 3, 1]
-  model.skip_rescale = True
-  model.resblock_type = 'biggan'
-  model.progressive = 'none'
-  model.progressive_input = 'none'
-  model.progressive_combine = 'sum'
-  model.attention_type = 'ddpm'
-  model.init_scale = 0.
-  model.embedding_type = 'positional'
-  model.fourier_scale = 16
-  model.conv_size = 3
+  model.latent_dim = 8
+  #eval
+  config.eval.begin_ckpt = 48
+  config.eval.end_ckpt = 49
 
   return config
