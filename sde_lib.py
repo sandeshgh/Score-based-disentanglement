@@ -231,7 +231,7 @@ class SDE(abc.ABC):
             score_list.append(score_fn(x[:,:,:,:,N], t, latent_i).unsqueeze(-1))
             
           else:
-            score_list.append(alpha*score_fn(x[:,:,:,:,N], t, latent_i).unsqueeze(-1))
+            score_list.append(score_fn(x[:,:,:,:,N], t, latent_i).unsqueeze(-1))
 
         
         
@@ -240,7 +240,88 @@ class SDE(abc.ABC):
         score_mean = score_mean.mean(dim = -1, keepdim=True)
         score_u_mean = score_fn(x[:,:,:,:,N], t, latent_u).unsqueeze(-1)
 
-        score_ind_list.append(score_mean + (1-alpha)*score_u_mean*2/3)
+        # score_ind_list.append(score_mean + (1-alpha)*score_u_mean*2/3)
+        score_ind_list.append(alpha*score_mean + (1-alpha)*score_u_mean)
+        score_stack = torch.cat(score_ind_list, dim=-1)
+
+        # score_stack = torch.cat((score*3, score_mean), dim =-1)
+       
+          
+        drift = drift - diffusion[:, None, None, None, None] ** 2 * score_stack * (0.5 if self.probability_flow else 1.)
+        # Set the diffusion function to zero for ODEs.
+        diffusion = 0. if self.probability_flow else diffusion
+        return drift, diffusion
+
+      def discretize(self, x, t, latent=None):
+        """Create discretized iteration rules for the reverse diffusion sampler."""
+        if latent is not None:
+          f, G = discretize_fn(x, t, latent)
+        else:
+          f, G = discretize_fn(x, t)
+        rev_f = f - G[:, None, None, None] ** 2 * score_fn(x, t) * (0.5 if self.probability_flow else 1.)
+        rev_G = torch.zeros_like(G) if self.probability_flow else G
+        return rev_f, rev_G
+
+    return RSDE()
+  
+  def reverse_multilatent_tune(self, score_fn, probability_flow=False):
+    """Create the reverse-time SDE/ODE.
+
+    Args:
+      score_fn: A time-dependent score-based model that takes x and t and returns the score.
+      probability_flow: If `True`, create the reverse-time ODE used for probability flow sampling.
+    """
+    N = self.N
+    T = self.T
+    sde_fn = self.sde
+    discretize_fn = self.discretize
+
+    # Build the class for reverse-time SDE.
+    class RSDE(self.__class__):
+      def __init__(self):
+        self.N = N
+        self.probability_flow = probability_flow
+
+      @property
+      def T(self):
+        return T
+
+      def sde(self, x, t, latent, alpha):
+        """Create the drift and diffusion functions for the reverse SDE/ODE."""
+        b,c,w,h,i_n = x.shape
+        if c ==1:
+          drift, diffusion = sde_fn(x.squeeze(), t)
+          drift = drift.unsqueeze(1)
+        else:
+          drift, diffusion = sde_fn(x.permute(0,1,4,2,3).contiguous().view(b,c*i_n, w, h), t)
+          drift = drift.contiguous().view(b, c,i_n, w, h).permute(0,1,3,4,2)
+        score_list = []
+        score_ind_list = []
+        N = latent.shape[-1]
+        for i in range(N):
+          latent_i = latent[:,:,i]
+          latent_u = torch.ones_like(latent_i)
+          score_i = score_fn(x[:,:,:,:,i], t, latent_i).unsqueeze(-1)
+          score_u = score_fn(x[:,:,:,:,i], t, latent_u).unsqueeze(-1)
+          
+          score_ind_list.append(alpha*score_i + (1-alpha)*score_u)
+          
+          if i == 2:
+            score_list.append(score_fn(x[:,:,:,:,N], t, latent_i).unsqueeze(-1))
+          
+          elif i==0:
+            score_list.append((2*alpha)*score_fn(x[:,:,:,:,N], t, latent_i).unsqueeze(-1))
+          else:
+            score_list.append((2-2*alpha)*score_fn(x[:,:,:,:,N], t, latent_i).unsqueeze(-1))
+
+        
+        
+        score_mean = torch.cat(score_list, dim =-1)
+
+        score_mean = score_mean.mean(dim = -1, keepdim=True)
+        # score_u_mean = score_fn(x[:,:,:,:,N], t, latent_u).unsqueeze(-1)
+
+        score_ind_list.append(score_mean)
         # score_ind_list.append(alpha*score_mean + (1-alpha)*score_u_mean/3)
         score_stack = torch.cat(score_ind_list, dim=-1)
 
@@ -263,6 +344,7 @@ class SDE(abc.ABC):
         return rev_f, rev_G
 
     return RSDE()
+
 
   def reverse_multilatent_mix(self, score_fn, probability_flow=False):
     """Create the reverse-time SDE/ODE.
