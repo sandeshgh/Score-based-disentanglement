@@ -1,0 +1,47 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            // "justMyCode": false,
+            "args": ["--workdir","celeba_latent_ddpm_adain_multi_im_48_ortho","--mode","train","--config","configs/subvp/celeba_ddpm_continuous_latent_arch_adain_multi.py"]
+            // "args": ["--workdir","clevr_latent_ddpm_adain_multi_im_48_lat_3","--mode","train","--config","configs/subvp/clevr_ddpm_continuous_latent_arch_adain_multi.py"]
+            // "args": ["--workdir","celeba_latent_ddpm_adain_multi_im_48_lat_3","--mode","train","--config","configs/subvp/celeba_ddpm_continuous_latent_arch_adain_multi.py"]
+            // "args": ["--workdir","cifar10_latent_ddpm_adain_multi_im_48_lat_5","--mode","train","--config","configs/subvp/cifar10_ddpm_continuous_latent_arch_adain_multi_5lat.py"]
+            // "args": ["--workdir","cifar10_latent_ddpm_adain_multi_im_48_w_uncond","--mode","analyze_close","--config","configs/subvp/cifar10_ddpm_continuous_latent_arch_adain_multi.py"]
+            // "args": ["--workdir","dsprites_latent_ddpm_adain_multi","--mode","analyze_close","--config","configs/subvp/dsprites_ddpm_continuous_latent_arch_adain_multi.py"]
+            // "args": ["--workdir","dsprites_latent_fkac_arch_class_free","--mode","analyze_close","--config","configs/subvp/dsprites_ddpm_continuous_latent_fkac.py"]
+            // "args": ["--workdir","dsprites_latent_fkac_class_free_integrate","--mode","train","--config","configs/subvp/dsprites_ddpm_continuous_latent_fkac.py"]
+            // "args": ["--workdir","dsprites_latent_discrete_predict_multi","--mode","analyze_close","--config","configs/vp/ddpm/dsprites_ddpm_discrete_latent_predict_multi.py"]
+            // "args": ["--workdir","dsprites_latent_predict_multi","--mode","analyze_close","--config","configs/subvp/dsprites_ddpm_continuous_latent_predict_multi.py"]
+            // "args": ["--workdir","dsprites_neural_sde","--mode","analyze_close","--config","configs/subvp/dsprites_ddpm_continuous_latent_neural_sde.py"]
+            // "args": ["--workdir","dsprites_neural_sde_w_diffusion","--mode","train","--config","configs/subvp/dsprites_ddpm_continuous_latent_neural_sde.py"]
+            // "args": ["--workdir","dsprites_neural_ode","--mode","train","--config","configs/subvp/dsprites_ddpm_continuous_latent_neuralode.py"]
+            // "args": ["--workdir","dsprites_latent_predict_dim_8_latent_detached_beta_1","--mode","analyze_close","--config","configs/subvp/dsprites_ddpm_continuous_latent_predict.py"]
+            // "args": ["--workdir","dsprites_latent_predict_dim_3_latent_detached_beta_1","--mode","analyze_close","--config","configs/subvp/dsprites_ddpm_continuous_latent_predict.py"]
+            // "args": ["--workdir","dsprites_latent_spectral_dim_3","--mode","train","--config","configs/subvp/dsprites_ddpm_continuous_latent.py"]
+            // "args": ["--workdir","dsprites_latent_beta_1e-1_highvar","--mode","train","--config","configs/subvp/dsprites_ddpm_continuous_latent_highvar.py"]
+            // "args": ["--workdir","dsprites_latent_gam_1e-3_dim_3","--mode","train","--config","configs/subvp/dsprites_ddpm_continuous_latent_rec.py"]
+            // "args": ["--workdir","dsprites_latent_dim_3","--mode","analyze_close","--config","configs/subvp/dsprites_ddpm_continuous_latent.py"]
+            // "args": ["--workdir","dsprites_latent_dim_contrast","--mode","train","--config","configs/subvp/dsprites_ddpm_continuous_latent_contrastive.py"]
+            // "args": ["--workdir","dsprites_latent_gam_1","--mode","train","--config","configs/subvp/dsprites_ddpm_continuous_latent_rec.py"]
+            // "args": ["--workdir","dsprites_latent_varia_beta_1e-5","--mode","analyze_close","--config","configs/subvp/dsprites_ddpm_continuous_latent_varia.py"],
+            // "args": ["--workdir","dsprites_latent_varia","--mode","train","--config","configs/subvp/dsprites_ddpm_continuous_latent_varia.py"]
+            // "args": ["--workdir","cifar10_basis_var","--mode","train","--config","configs/subvp/cifar10_ddpm_continuous_basis.py"]
+            // "args": ["--workdir","cifar10_label","--mode","analyze","--config","configs/subvp/cifar10_ddpm_continuous_label.py"]
+            // "args": ["--workdir","cifar10_latent_factor_orthog","--mode","analyze","--config","configs/subvp/cifar10_ddpm_continuous_latent_factor.py"]
+            // "args": ["--workdir","cifar10_latent","--mode","train","--config","configs/subvp/cifar10_ddpm_continuous_latent.py"]
+            // "args": ["--workdir","cifar10_equal_energy","--mode","train","--config","configs/subvp/cifar10_ddpm_continuous_equal_energy.py"]
+            // "args": ["--workdir","cifar10_ddpm_conditional","--mode","train","--config","configs/subvp/cifar10_ddpm_continuous_conditional.py"]
+            // "args": ["--workdir","cifar10_ddpm_compositional_discrepancy_2","--mode","visualize","--config","configs/subvp/cifar10_ddpm_continuous_compositional.py"]
+            // "args": ["--workdir","debug_cifar10","--mode","train","--config","configs/vp/cifar10_ncsnpp_continuous.py"]
+        }
+    ]
+}

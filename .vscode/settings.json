@@ -1,0 +1,5 @@
+{
+    // "python.pythonPath": "/home/sandesh/anaconda3/envs/env_clip/bin/python3",
+    "python.defaultInterpreterPath": "/home/sandesh/anaconda3/envs/env_score_clone/bin/python3",
+    // "python.defaultInterpreterPath": "/home/sandesh/anaconda3/envs/nvae_tf/bin/python3"
+}
