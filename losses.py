@@ -420,7 +420,7 @@ def get_latent_loss_fn(sde, train, reduce_mean=True, continuous=True, likelihood
 
   return loss_fn
 
-def get_latent_loss_fn_w_unconditional(sde, train, reduce_mean=True, continuous=True, likelihood_weighting=True, eps=1e-5, gamma=1e-2, reconstruction_loss=False):
+def get_latent_loss_fn_w_unconditional(sde, train, reduce_mean=True, continuous=True, likelihood_weighting=True, eps=1e-5, gamma=1e-2, ortho_loss=False):
   """Create a loss function for training with arbirary SDEs.
   Args:
     sde: An `sde_lib.SDE` object that represents the forward SDE.
@@ -446,12 +446,20 @@ def get_latent_loss_fn_w_unconditional(sde, train, reduce_mean=True, continuous=
     """
     beta = 1
 
-    score_fn = mutils.get_latent_score_fn(sde, model, train=train, continuous=continuous)
+    score_fn = mutils.get_latent_score_fn(sde, model, train=train, continuous=continuous, variational=ortho_loss)
     t = torch.rand(batch.shape[0], device=batch.device) * (sde.T - eps) + eps
     z = torch.randn_like(batch)
     mean, std = sde.marginal_prob(batch, t)
     perturbed_data = mean + std[:, None, None, None] * z
-    score = score_fn(perturbed_data, t, batch)
+    if ortho_loss:
+      score, orthogonal_loss = score_fn(perturbed_data, t, batch)
+    else:
+      score = score_fn(perturbed_data, t, batch)
+    # if train:
+    #   model.train()
+    # else:
+    #   model.eval()
+    # orthogonal_loss = model.module.orthogonal_loss_fn()
     # loss_div = score_divergence(score, score2)
     
 
@@ -468,8 +476,13 @@ def get_latent_loss_fn_w_unconditional(sde, train, reduce_mean=True, continuous=
     losses_u = torch.square(score_u * std[:, None, None, None] + z_u)
     losses_u = reduce_op(losses_u.reshape(losses_u.shape[0], -1), dim=-1)
     loss_score_u = torch.mean(losses_u) 
-
-    loss = loss_score + loss_score_u
+    if ortho_loss:
+      orthogonal_loss = orthogonal_loss.mean()
+      loss = loss_score + loss_score_u + orthogonal_loss
+      return loss, orthogonal_loss, loss_score
+    else:
+      loss = loss_score + loss_score_u
+      return loss, loss_score_u, loss_score
 
 
     # else:
@@ -479,7 +492,7 @@ def get_latent_loss_fn_w_unconditional(sde, train, reduce_mean=True, continuous=
 
     
     
-    return loss, loss_score_u, loss_score
+    
     
     
 
@@ -1568,7 +1581,7 @@ def get_step_fn(sde, train, optimize_fn=None, reduce_mean=False, continuous=True
   elif config.training.conditional_model == 'latent_multi':
     if config.training.unconditional_loss:
       loss_fn = get_latent_loss_fn_w_unconditional(sde, train, reduce_mean=reduce_mean,
-                              continuous=True, likelihood_weighting=likelihood_weighting)
+                              continuous=True, likelihood_weighting=likelihood_weighting, ortho_loss = config.training.ortho_loss)
     else:
       loss_fn = get_latent_loss_fn(sde, train, reduce_mean=reduce_mean,
                               continuous=True, likelihood_weighting=likelihood_weighting)

@@ -28,7 +28,7 @@ import logging
 # Keep the import below for registering all model definitions
 from models import ddpm, unet_autoenc #ncsnv2, ncsnpp
 import losses
-import sampling, sampling_latent, sampling_equal_energy, sampling_latent_factor, sampling_latent_multi
+import sampling, sampling_latent, sampling_equal_energy, sampling_latent_factor, sampling_latent_multi, sampling_latent_multi_lat5
 from models import utils as mutils
 from models.ema import ExponentialMovingAverage
 from models.unet import BeatGANsUNetConfig
@@ -214,7 +214,7 @@ def train(config, workdir):
   writer = tensorboard.SummaryWriter(tb_dir)
 
   # Initialize model.
-  if config.model.name == 'ddpm_latent_Adain' or config.model.name == 'ddpm_latent_Adain_multilatent' :
+  if config.model.name == 'ddpm_latent_Adain' or config.model.name == 'ddpm_latent_Adain_multilatent' or config.model.name == 'ddpm_latent_Adain_multilatent_new' :
     
     # unet_config = BeatGANsUNetConfig(
     #   image_size = config.data.image_size,
@@ -388,7 +388,7 @@ def train(config, workdir):
         
 
         plot_samples_conditional(sample_dir, torch.cat((batch_orig.unsqueeze(-1),sample.unsqueeze(-1)), dim=-1), step, [0,1])
-        scatter_plot_data(score_model, train_ds, config, scaler, viz_dir = sample_dir, epoch=step, n_ep=1000 )
+        # scatter_plot_data(score_model, train_ds, config, scaler, viz_dir = sample_dir, epoch=step, n_ep=1000 )
 
         ema.restore(score_model.parameters())
         
@@ -617,7 +617,7 @@ def analyze_close(config, workdir, visualization_folder="viz"):
   inverse_scaler = datasets.get_data_inverse_scaler(config)
 
   # Initialize model
-  if config.model.name == 'ddpm_latent_Adain' or config.model.name == 'ddpm_latent_Adain_multilatent' :
+  if config.model.name == 'ddpm_latent_Adain' or config.model.name == 'ddpm_latent_Adain_multilatent' or config.model.name == 'ddpm_latent_Adain_multilatent_new':
     
     # unet_config = BeatGANsUNetConfig(
     #   image_size = config.data.image_size,
@@ -666,7 +666,10 @@ def analyze_close(config, workdir, visualization_folder="viz"):
   if config.training.conditional_model == 'latent' or config.training.conditional_model == 'latent_variational':
     analysis_fn = sampling_latent.get_analysis_fn(config, sde, sampling_shape, inverse_scaler, sampling_eps, type=analysis_type)
   elif config.training.conditional_model == 'latent_multi':
-    analysis_fn = sampling_latent_multi.get_analysis_fn(config, sde, sampling_shape, inverse_scaler, sampling_eps, type=analysis_type)
+    if config.model.name == 'ddpm_latent_Adain_multilatent_new':
+      analysis_fn = sampling_latent_multi_lat5.get_analysis_fn(config, sde, sampling_shape, inverse_scaler, sampling_eps, type=analysis_type)
+    else:
+      analysis_fn = sampling_latent_multi.get_analysis_fn(config, sde, sampling_shape, inverse_scaler, sampling_eps, type=analysis_type)
   if config.training.conditional_model == 'latent_factor':
     analysis_fn = sampling_latent_factor.get_analysis_fn(config, sde, sampling_shape, inverse_scaler, sampling_eps, mode = 'interpolate')
   
@@ -712,8 +715,8 @@ def analyze_close(config, workdir, visualization_folder="viz"):
   batch = next(train_iter)
   batch_idx = 5
   dim_idx = 0
-  mode = 'mix'#'project_one_hot'#'test_dim'#'project_one_hot'
-  for batch_idx in range(0,8):
+  mode = analysis_type#'mix'#'project_one_hot'#'test_dim'#'project_one_hot'
+  for batch_idx in range(6,9):
     print('dim_idx:', dim_idx)
     print('batch_idx:', batch_idx)
     eval_batch = torch.from_numpy(batch['image']._numpy()).to(config.device).float()
@@ -735,24 +738,178 @@ def analyze_close(config, workdir, visualization_folder="viz"):
       # plot_samples_analysis(sample_dir, samples, step, pos_index)
 
     else:
+      close_mode = 'project_one_hot'#'test_dim'#'project_one_hot'
       sampler = 'pc'
-      print(mode)
-      samples = analysis_fn(score_model, eval_batch_model, mode=mode, dim_idx=dim_idx, sampler=sampler, viz_dir=sample_dir, batch_idx = batch_idx)
+      print("type:", mode)
+      samples = analysis_fn(score_model, eval_batch_model, mode=close_mode, dim_idx=dim_idx, sampler=sampler, viz_dir=sample_dir, batch_idx = batch_idx)
       # samples = torch.cat((sample1.unsqueeze(-1), sample2.unsqueeze(-1), sample3.unsqueeze(-1)), dim =-1)
     if config.training.conditional_model == 'latent_multi':
-      samples_a=torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,0,:]), dim=-1)
-      samples_b=torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,1,:]), dim=-1)
-      samples_c=torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,2,:]), dim=-1)
-      samples_sum = torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,3,:]), dim=-1)
-      plot_samples_analysis(sample_dir, samples_a, step, analysis_type+'__'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_a')
-      plot_samples_analysis(sample_dir, samples_b, step, analysis_type+'__'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_b')
-      plot_samples_analysis(sample_dir, samples_c, step, analysis_type+'__'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_c')
-      plot_samples_analysis(sample_dir, samples_sum, step, analysis_type+'__'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_sum')
+      if config.model.name == 'ddpm_latent_Adain_multilatent_new':
+        samples_a=torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,0,:]), dim=-1)
+        samples_b=torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,1,:]), dim=-1)
+        samples_c=torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,2,:]), dim=-1)
+        samples_d=torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,3,:]), dim=-1)
+        samples_e=torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,4,:]), dim=-1)
+        samples_sum = torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,5,:]), dim=-1)
+        plot_samples_analysis(sample_dir, samples_a, step, analysis_type+'__'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_a')
+        plot_samples_analysis(sample_dir, samples_b, step, analysis_type+'__'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_b')
+        plot_samples_analysis(sample_dir, samples_c, step, analysis_type+'__'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_c')
+        plot_samples_analysis(sample_dir, samples_d, step, analysis_type+'__'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_d')
+        plot_samples_analysis(sample_dir, samples_e, step, analysis_type+'__'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_e')
+        plot_samples_analysis(sample_dir, samples_sum, step, analysis_type+'__'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_sum')
+      else:
+        samples_a=torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,0,:]), dim=-1)
+        samples_b=torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,1,:]), dim=-1)
+        samples_c=torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,2,:]), dim=-1)
+        samples_sum = torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,3,:]), dim=-1)
+        plot_samples_analysis(sample_dir, samples_a, step, analysis_type+'__'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_a')
+        plot_samples_analysis(sample_dir, samples_b, step, analysis_type+'__'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_b')
+        plot_samples_analysis(sample_dir, samples_c, step, analysis_type+'__'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_c')
+        plot_samples_analysis(sample_dir, samples_sum, step, analysis_type+'__'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_sum')
     else:
       samples=torch.cat((eval_batch.unsqueeze(-1),samples), dim=-1)
       plot_samples_analysis(sample_dir, samples, step, analysis_type+'_'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx))
         # plot_samples_conditional(sample_dir, sample, 12.0, [0.5,0.7])
   # print("Done!")
+
+def visual(config, workdir, visualization_folder="viz"):
+  # Create directory to eval_folder
+  viz_dir = os.path.join(workdir, visualization_folder)
+  tf.io.gfile.makedirs(viz_dir)
+
+  # Build data pipeline
+  train_ds, eval_ds, _ = datasets.get_dataset(config,
+                                              uniform_dequantization=config.data.uniform_dequantization,
+                                              evaluation=True)
+
+  # Create data normalizer and its inverse
+  scaler = datasets.get_data_scaler(config)
+  inverse_scaler = datasets.get_data_inverse_scaler(config)
+
+  # Initialize model
+  if config.model.name == 'ddpm_latent_Adain' or config.model.name == 'ddpm_latent_Adain_multilatent' or config.model.name == 'ddpm_latent_Adain_multilatent_new':
+    
+    # unet_config = BeatGANsUNetConfig(
+    #   image_size = config.data.image_size,
+    #   in_channels= config.data.num_channels,
+    #   # model_channels=
+    #   out_channels=config.data.num_channels
+    # )
+    conf = BeatGANsAutoencConfig()
+    conf.image_size = config.data.image_size
+    conf.in_channels = config.data.num_channels
+    conf.out_channels = config.data.num_channels
+    conf.embed_channels = config.model.latent_dim
+    conf.enc_out_channels = config.model.latent_dim
+    conf.resnet_two_cond = True
+    # conf.model.name = 'ddpm_latent_Adain'
+    score_model = mutils.create_model(conf, model_name = config.model.name, device= config.device)
+  else:
+    score_model = mutils.create_model(config)
+  
+  optimizer = losses.get_optimizer(config, score_model.parameters())
+  ema = ExponentialMovingAverage(score_model.parameters(), decay=config.model.ema_rate)
+  state = dict(optimizer=optimizer, model=score_model, ema=ema, step=0)
+
+  checkpoint_dir = os.path.join(workdir, "checkpoints")
+
+  # Setup SDEs
+  if config.training.sde.lower() == 'vpsde':
+    sde = sde_lib.VPSDE(beta_min=config.model.beta_min, beta_max=config.model.beta_max, N=config.model.num_scales)
+    sampling_eps = 1e-3
+  elif config.training.sde.lower() == 'subvpsde':
+    sde = sde_lib.subVPSDE(beta_min=config.model.beta_min, beta_max=config.model.beta_max, N=config.model.num_scales)
+    sampling_eps = 1e-3
+  elif config.training.sde.lower() == 'vesde':
+    sde = sde_lib.VESDE(sigma_min=config.model.sigma_min, sigma_max=config.model.sigma_max, N=config.model.num_scales)
+    sampling_eps = 1e-5
+  else:
+    raise NotImplementedError(f"SDE {config.training.sde} unknown.")
+
+  # Build the sampling function when sampling is enabled
+  # analysis_type 
+
+  sampling_shape = (config.eval.batch_size,
+                    config.data.num_channels,
+                    config.data.image_size, config.data.image_size)
+  analysis_type = config.eval.analysis_type
+  if config.training.conditional_model == 'latent' or config.training.conditional_model == 'latent_variational':
+    raise NotImplementedError
+    # analysis_fn = sampling_latent.get_analysis_fn(config, sde, sampling_shape, inverse_scaler, sampling_eps, type=analysis_type)
+  elif config.training.conditional_model == 'latent_multi':
+    analysis_fn = sampling_latent_multi.get_visual_fn(config, sde, sampling_shape, inverse_scaler, sampling_eps)
+  if config.training.conditional_model == 'latent_factor':
+    raise NotImplementedError
+    # analysis_fn = sampling_latent_factor.get_analysis_fn(config, sde, sampling_shape, inverse_scaler, sampling_eps, mode = 'interpolate')
+
+
+  begin_ckpt = config.eval.begin_ckpt
+  logging.info("begin checkpoint: %d" % (begin_ckpt,))
+  ckpt = begin_ckpt
+  
+
+  # Wait for 2 additional mins in case the file exists but is not ready for reading
+  ckpt_path = os.path.join(checkpoint_dir, f'checkpoint_{ckpt}.pth')
+  try:
+    state = restore_checkpoint(ckpt_path, state, device=config.device)
+  except:
+    time.sleep(60)
+    try:
+      state = restore_checkpoint(ckpt_path, state, device=config.device)
+    except:
+      time.sleep(120)
+      state = restore_checkpoint(ckpt_path, state, device=config.device)
+  ema.copy_to(score_model.parameters())
+
+  sample_dir = viz_dir
+  print('Sample dir', sample_dir)
+  # score_dir = os.path.join(viz_dir, "score_plot")
+  eval_iter = iter(eval_ds)  # pytype: disable=wrong-arg-types
+  train_iter = iter(train_ds)
+
+  step = ckpt
+  
+  # for i, batch in enumerate(train_iter):
+  
+  batch_idx = 5
+  dim_idx = 0
+  mode = 'mix'#'project_one_hot'#'test_dim'#'project_one_hot'
+  for batch_idx in range(5,10):
+    batch = next(train_iter)
+    print('dim_idx:', dim_idx)
+    print('batch_idx:', batch_idx)
+    eval_batch = torch.from_numpy(batch['image']._numpy()).to(config.device).float()
+    if eval_batch.shape[2]!=config.data.image_size:
+      eval_batch = resize_image(eval_batch, config.data.image_size )
+    eval_batch = eval_batch.permute(0, 3, 1, 2)
+    
+    eval_batch_model = scaler(eval_batch)
+
+    if config.training.conditional_model == 'latent_factor':
+      pos_index = [5,6]
+      samples = analysis_fn(score_model, eval_batch_model, pos_index)
+      # plot_samples_analysis(sample_dir, samples, step, pos_index)
+
+    else:
+      sampler = 'pc'
+      print(mode)
+      samples = analysis_fn(score_model, eval_batch_model, viz_dir=sample_dir)
+      # samples = torch.cat((sample1.unsqueeze(-1), sample2.unsqueeze(-1), sample3.unsqueeze(-1)), dim =-1)
+    if config.training.conditional_model == 'latent_multi':
+      # samples_a=torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,0,:]), dim=-1)
+      samples_a=torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,0,:].repeat(1,3,1,1,1)), dim=-1) #samples[:,:,:,:,0,:]#
+      samples_b=torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,1,:].repeat(1,3,1,1,1)), dim=-1) #samples[:,:,:,:,1,:]#
+      samples_c=samples[:,:,:,:,2,:]#torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,2,:]), dim=-1) #samples[:,:,:,:,2,:]#
+      # samples_sum = torch.cat((eval_batch.unsqueeze(-1),samples[:,:,:,:,3,:]), dim=-1)
+      plot_samples_analysis(sample_dir, samples_a, step, 'gradplot_'+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_a')
+      plot_samples_analysis(sample_dir, samples_b, step, 'gradplot_'+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_b')
+      plot_samples_analysis(sample_dir, samples_c, step, 'gradplot_'+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_c')
+      # plot_samples_analysis(sample_dir, samples_sum, step, analysis_type+'__'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx)+'_sum')
+    else:
+      samples=torch.cat((eval_batch.unsqueeze(-1),samples), dim=-1)
+      plot_samples_analysis(sample_dir, samples, step, analysis_type+'_'+sampler+mode+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx))
+
+  print("Done!")
 
 def rot(U,V):
   # this converts U to V

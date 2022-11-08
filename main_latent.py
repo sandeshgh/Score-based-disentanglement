@@ -25,14 +25,14 @@ import run_lib_latent
 
 # print('debugging, imported stuffs')
 os.environ["CUDA_DEVIC_ORDER"]="PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"]="0,1,2"
+os.environ["CUDA_VISIBLE_DEVICES"]="2,1,0"
 
 FLAGS = flags.FLAGS
 
 config_flags.DEFINE_config_file(
   "config", None, "Training configuration.", lock_config=True)
 flags.DEFINE_string("workdir", None, "Work directory.")
-flags.DEFINE_enum("mode", None, ["train", "eval", "visualize", "analyze", "analyze_close", "plot_data"], "Running mode: train or eval")
+flags.DEFINE_enum("mode", None, ["train", "eval", "visualize", "analyze", "analyze_close", "plot_data", "visual"], "Running mode: train or eval")
 flags.DEFINE_string("eval_folder", "eval",
                     "The folder name for storing evaluation results")
 flags.mark_flags_as_required(["workdir", "config", "mode"])
@@ -67,9 +67,9 @@ def main(argv):
   elif FLAGS.mode == "analyze_close":
     # Run the evaluation pipeline
     run_lib_latent.analyze_close(FLAGS.config, FLAGS.workdir, "analyze_close")
-  elif FLAGS.mode == "plot_data":
+  elif FLAGS.mode == "visual":
     # Run the evaluation pipeline
-    run_lib_latent.plot_data(FLAGS.config, FLAGS.workdir, "dataplot")
+    run_lib_latent.visual(FLAGS.config, FLAGS.workdir, "visual")
   else:
     raise ValueError(f"Mode {FLAGS.mode} not recognized.")
 

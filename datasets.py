@@ -18,6 +18,7 @@
 import jax
 import tensorflow as tf
 import tensorflow_datasets as tfds
+# from progressive_gan_data_tools.dataset import load_dataset_celeba
 
 
 def get_data_scaler(config):
@@ -99,6 +100,15 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False):
     def resize_op(img):
       img = tf.image.convert_image_dtype(img, tf.float32)
       return tf.image.resize(img, [config.data.image_size, config.data.image_size], antialias=True)
+  
+  elif config.data.dataset == 'CLEVR':
+    dataset_builder = tfds.builder('clevr')
+    train_split_name = 'train'
+    eval_split_name = 'test'
+
+    def resize_op(img):
+      img = tf.image.convert_image_dtype(img, tf.float32)
+      return tf.image.resize(img, [config.data.image_size, config.data.image_size], antialias=True)
 
   elif config.data.dataset == 'SVHN':
     dataset_builder = tfds.builder('svhn_cropped')
@@ -119,9 +129,13 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False):
       return tf.image.resize(img, [config.data.image_size, config.data.image_size], antialias=True)
 
   elif config.data.dataset == 'CELEBA':
-    dataset_builder = tfds.builder('celeb_a')
+    # dataset_builder = tfds.builder('celeb_a')
+    dataset_builder = tf.data.TFRecordDataset(config.data.tfrecords_path, compression_type='')
+    # tf.data.TFRecordDataset(tfr_file, compression_type=''
     train_split_name = 'train'
     eval_split_name = 'validation'
+
+    # dataset = load_dataset_celeba(config.data.tfrecords_path)
 
     def resize_op(img):
       img = tf.image.convert_image_dtype(img, tf.float32)
@@ -130,7 +144,8 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False):
       return img
 
   elif config.data.dataset == 'LSUN':
-    dataset_builder = tfds.builder(f'lsun/{config.data.category}')
+    # dataset_builder = tfds.builder(f'lsun/{config.data.category}')
+    dataset_builder = tf.data.TFRecordDataset(config.data.tfrecords_path, compression_type='')
     train_split_name = 'train'
     eval_split_name = 'validation'
 
@@ -156,7 +171,13 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False):
       f'Dataset {config.data.dataset} not yet supported.')
 
   # Customize preprocess functions for each dataset.
-  if config.data.dataset in ['FFHQ', 'CelebAHQ']:
+  if config.data.dataset in ['FFHQ', 'CelebAHQ', 'CELEBA', 'LSUN']: #
+    # def parse_tfrecord_tf(record):
+    # features = tf.parse_single_example(record, features={
+    #     'shape': tf.FixedLenFeature([3], tf.int64),
+    #     'data': tf.FixedLenFeature([], tf.string)})
+    # data = tf.decode_raw(features['data'], tf.uint8)
+    # return tf.reshape(data, features['shape'])
     def preprocess_fn(d):
       sample = tf.io.parse_single_example(d, features={
         'shape': tf.io.FixedLenFeature([3], tf.int64),
@@ -169,7 +190,8 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False):
         img = tf.image.random_flip_left_right(img)
       if uniform_dequantization:
         img = (tf.random.uniform(img.shape, dtype=tf.float32) + img * 255.) / 256.
-      return dict(image=img, label=None)
+      return dict(image=img)
+      # 
   
   elif config.data.dataset == 'dsprites':
     def preprocess_fn(d):
@@ -182,6 +204,18 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False):
         img = (tf.random.uniform(img.shape, dtype=tf.float32) + img * 255.) / 256.
       all_labels = list(d.keys())
       out = dict(image=img, label=d.get(all_labels[1]))
+
+      return out
+  
+  elif config.data.dataset == 'CLEVR':
+    def preprocess_fn(d):
+      """Basic preprocessing function scales data to [0, 1) and randomly flips."""
+      img = resize_op(d['image'])
+      if config.data.random_flip and not evaluation:
+        img = tf.image.random_flip_left_right(img)
+      if uniform_dequantization:
+        img = (tf.random.uniform(img.shape, dtype=tf.float32) + img * 255.) / 256.
+      out = dict(image=img)
 
       return out
 
@@ -211,9 +245,9 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False):
       ds = dataset_builder.with_options(dataset_options)
     ds = ds.repeat(count=num_epochs)
     ds = ds.shuffle(shuffle_buffer_size)
-    ds = ds.map(preprocess_fn, num_parallel_calls=tf.data.experimental.AUTOTUNE)
-    ds = ds.batch(batch_size, drop_remainder=True)
-    return ds.prefetch(prefetch_size)
+    out = ds.map(preprocess_fn , num_parallel_calls=tf.data.experimental.AUTOTUNE)
+    out = out.batch(batch_size, drop_remainder=True)
+    return out.prefetch(prefetch_size)
 
   train_ds = create_dataset(dataset_builder, train_split_name)
   eval_ds = create_dataset(dataset_builder, eval_split_name)
