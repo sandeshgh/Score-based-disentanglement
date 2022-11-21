@@ -53,6 +53,19 @@ def resize_image(batch, size):
   batch = transforms.Resize(size)(batch)
   out = batch.permute(0,2,3,1)
   return out
+def save_samples_analysis(gt, samples, dir, name, step):
+  this_sample_dir = os.path.join(dir, "iter_{}".format(step))
+  tf.io.gfile.makedirs(this_sample_dir)
+  filename = os.path.join(this_sample_dir, name)
+  np.save(filename+'_gt.npy', gt.cpu().numpy())
+  print('gt saved')
+  N = samples.shape[-2]
+  for k in range(N):
+    np.save(filename+'_factor_'+str(k)+'.npy', samples[:,:,:,:,k,:].cpu().numpy())
+
+  return 0
+
+
 
 def plot_samples(sample_dir, sample, step, class_n=None):
   this_sample_dir = os.path.join(sample_dir, "iter_{}".format(step))
@@ -700,7 +713,15 @@ def analyze_close(config, workdir, visualization_folder="viz"):
   ema.copy_to(score_model.parameters())
 
   sample_dir = viz_dir
+  save_dir = os.path.join('/data/sandesh/score_results', viz_dir)
+  is_save = config.eval.save_result
+  if is_save:
+    tf.io.gfile.makedirs(save_dir)
+  # if not os.path.isdir('/data/sandesh/score_results'):
+  #   os.mkdir('')
+
   print('Sample dir', sample_dir)
+  print('Save dir', sample_dir)
   # score_dir = os.path.join(viz_dir, "score_plot")
   eval_iter = iter(eval_ds)  # pytype: disable=wrong-arg-types
   train_iter = iter(train_ds)
@@ -716,7 +737,7 @@ def analyze_close(config, workdir, visualization_folder="viz"):
   batch_idx = 5
   dim_idx = 0
   mode = analysis_type#'mix'#'project_one_hot'#'test_dim'#'project_one_hot'
-  for batch_idx in range(6,9):
+  for batch_idx in range(0,12):
     print('dim_idx:', dim_idx)
     print('batch_idx:', batch_idx)
     eval_batch = torch.from_numpy(batch['image']._numpy()).to(config.device).float()
@@ -731,17 +752,22 @@ def analyze_close(config, workdir, visualization_folder="viz"):
     else:
       eval_batch = eval_batch[batch_idx].repeat(eval_batch.shape[0],1,1,1)
     eval_batch_model = scaler(eval_batch)
+    #just testing saving function
+    # save_samples_analysis(eval_batch, eval_batch.unsqueeze(-1).unsqueeze(-1), save_dir, analysis_type+'__'+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx), step)
 
     if config.training.conditional_model == 'latent_factor':
       pos_index = [5,6]
       samples = analysis_fn(score_model, eval_batch_model, pos_index)
       # plot_samples_analysis(sample_dir, samples, step, pos_index)
+    
 
     else:
       close_mode = 'project_one_hot'#'test_dim'#'project_one_hot'
       sampler = 'pc'
       print("type:", mode)
       samples = analysis_fn(score_model, eval_batch_model, mode=close_mode, dim_idx=dim_idx, sampler=sampler, viz_dir=sample_dir, batch_idx = batch_idx)
+      if is_save:
+        save_samples_analysis(eval_batch, samples, save_dir, analysis_type+'_'+'dim_'+str(dim_idx)+'_batch_'+str(batch_idx), step)
       # samples = torch.cat((sample1.unsqueeze(-1), sample2.unsqueeze(-1), sample3.unsqueeze(-1)), dim =-1)
     if config.training.conditional_model == 'latent_multi':
       if config.model.name == 'ddpm_latent_Adain_multilatent_new':

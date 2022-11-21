@@ -25,7 +25,7 @@ import run_lib_latent
 
 # print('debugging, imported stuffs')
 os.environ["CUDA_DEVIC_ORDER"]="PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"]="2,1,0"
+os.environ["CUDA_VISIBLE_DEVICES"]="1"
 
 FLAGS = flags.FLAGS
 

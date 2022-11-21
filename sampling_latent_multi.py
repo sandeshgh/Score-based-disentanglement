@@ -343,7 +343,10 @@ class EulerMaruyamaPredictor(Predictor):
       self.rsde = sde.reverse_multilatent_mix(score_fn, probability_flow)
     elif mode == 'tune':
       self.rsde = sde.reverse_multilatent_tune(score_fn, probability_flow)
-
+    elif mode == 'switch_1_u':
+      self.rsde = sde.reverse_switch_1_u(score_fn, probability_flow)
+    elif mode == 'switch_2_u':
+      self.rsde = sde.reverse_switch_2_u(score_fn, probability_flow)
 
 
   def update_fn(self, x, t, latent, alpha= None):
